@@ -1,0 +1,5 @@
+server: https://vpn.example.com:8443
+name: workshop-pc
+state_dir: ./client-state
+local_address: 127.0.0.1:9070
+keepalive: 25s

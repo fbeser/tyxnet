@@ -1,0 +1,15 @@
+[Unit]
+Description=TyxNet Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/tyxnet-server run --config /etc/tyxnet/server.yaml
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tyxnet /var/log/tyxnet /etc/tyxnet
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+listen_address: 127.0.0.1
+api_port: 8443
+tunnel_port: 51830
+network: 10.90.0.0/24
+database: ./tyxnet.db
+tls_cert: ""
+tls_key: ""
+allow_insecure_http: false
+session_ttl: 15m

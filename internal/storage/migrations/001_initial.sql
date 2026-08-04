@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS roles(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS permissions(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+CREATE TABLE IF NOT EXISTS user_roles(user_id TEXT NOT NULL REFERENCES users(id), role_id TEXT NOT NULL REFERENCES roles(id), PRIMARY KEY(user_id,role_id));
+CREATE TABLE IF NOT EXISTS devices(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), name TEXT NOT NULL, virtual_ip TEXT NOT NULL UNIQUE, public_key BLOB NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, version TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, last_seen TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS device_keys(device_id TEXT NOT NULL REFERENCES devices(id), public_key BLOB NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), token_hash BLOB NOT NULL UNIQUE, expires_at TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS enrollment_tokens(id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), token_hash BLOB NOT NULL UNIQUE, expires_at TEXT NOT NULL, max_uses INTEGER NOT NULL, uses INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS commands(id TEXT PRIMARY KEY, sender_user_id TEXT NOT NULL REFERENCES users(id), device_id TEXT NOT NULL REFERENCES devices(id), type TEXT NOT NULL, status TEXT NOT NULL, result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS command_results(id TEXT PRIMARY KEY, command_id TEXT NOT NULL REFERENCES commands(id), status TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT, action TEXT NOT NULL, target_id TEXT, remote_ip TEXT, detail TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS server_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS traffic_counters(device_id TEXT PRIMARY KEY REFERENCES devices(id), rx_bytes INTEGER NOT NULL DEFAULT 0, tx_bytes INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);
+INSERT OR IGNORE INTO roles(id,name) VALUES ('role_admin','admin'),('role_operator','operator'),('role_member','member'),('role_viewer','viewer');

@@ -1,0 +1,14 @@
+[Unit]
+Description=TyxNet Client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/tyxnet-client run --config /etc/tyxnet/client.yaml
+Restart=on-failure
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

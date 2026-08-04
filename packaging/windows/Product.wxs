@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Packaging scaffold only. It intentionally produces no release installer yet. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="TyxNet" Language="1033" Version="0.1.0" Manufacturer="TyxNet" UpgradeCode="B9532192-E47F-4B06-9EC7-E4435810346A">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MediaTemplate EmbedCab="yes" />
+  </Product>
+</Wix>
