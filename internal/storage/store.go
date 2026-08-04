@@ -43,6 +43,11 @@ type Command struct {
 	ID, SenderUserID, DeviceID, Type, Status, Result, Error string
 	CreatedAt, ExpiresAt                                    time.Time
 }
+type AuditLog struct {
+	ID                                          int64
+	ActorID, Action, TargetID, RemoteIP, Detail string
+	CreatedAt                                   time.Time
+}
 
 func Open(ctx context.Context, path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -52,11 +57,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if _, err = db.ExecContext(ctx, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	if err = s.Migrate(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -78,13 +83,16 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, string(b)); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return fmt.Errorf("migration %s: %w", e.Name(), err)
 		}
 		var v int
-		fmt.Sscanf(e.Name(), "%d_", &v)
+		if _, err = fmt.Sscanf(e.Name(), "%d_", &v); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("parse migration version %s: %w", e.Name(), err)
+		}
 		if _, err = tx.ExecContext(ctx, "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)", v, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 			return err
 		}
 		if err = tx.Commit(); err != nil {
@@ -114,7 +122,7 @@ func (s *Store) CreateAdmin(ctx context.Context, username, passwordHash string) 
 	if err != nil {
 		return User{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)", u.ID, u.Username, passwordHash, u.CreatedAt.Format(time.RFC3339Nano)); err != nil {
 		return User{}, fmt.Errorf("create user: %w", err)
 	}
@@ -122,6 +130,33 @@ func (s *Store) CreateAdmin(ctx context.Context, username, passwordHash string) 
 		return User{}, err
 	}
 	return u, tx.Commit()
+}
+func (s *Store) CreateInitialAdmin(ctx context.Context, username, passwordHash string) (User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var count int
+	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&count); err != nil {
+		return User{}, err
+	}
+	if count != 0 {
+		return User{}, errors.New("initial setup is already complete")
+	}
+	u := User{ID: id("usr"), Username: username, Role: "admin", CreatedAt: time.Now().UTC()}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)", u.ID, u.Username, passwordHash, u.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		return User{}, fmt.Errorf("create initial admin: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO user_roles(user_id,role_id) VALUES(?, 'role_admin')", u.ID); err != nil {
+		return User{}, err
+	}
+	return u, tx.Commit()
+}
+func (s *Store) UserCount(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM users").Scan(&n)
+	return n, err
 }
 func (s *Store) Authenticate(ctx context.Context, username string) (User, string, error) {
 	var u User
@@ -180,8 +215,8 @@ func (s *Store) ListTokens(ctx context.Context) ([]Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Token
+	defer func() { _ = rows.Close() }()
+	out := make([]Token, 0)
 	for rows.Next() {
 		var t Token
 		var exp, created string
@@ -205,7 +240,7 @@ func (s *Store) ConsumeToken(ctx context.Context, value string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	var tokenID, userID, exp string
 	var max, uses, rev int
 	err = tx.QueryRowContext(ctx, "SELECT id,user_id,expires_at,max_uses,uses,revoked FROM enrollment_tokens WHERE token_hash=?", hash(value)).Scan(&tokenID, &userID, &exp, &max, &uses, &rev)
@@ -242,7 +277,9 @@ func (s *Store) nextIP(ctx context.Context, network string) (string, error) {
 		_ = rows.Scan(&ip)
 		used[ip] = true
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return "", err
+	}
 	ip := append(net.IP(nil), ipnetIP.To4()...)
 	inc(ip) // Reserve network+1 for the TyxNet server.
 	for i := 0; i < 1<<20; i++ {
@@ -285,12 +322,28 @@ func (s *Store) JoinDevice(ctx context.Context, token, name, osName, arch, versi
 	return d, nil
 }
 func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT id,user_id,name,virtual_ip,os,arch,version,revoked,last_seen,created_at FROM devices ORDER BY created_at")
+	return s.listDevices(ctx, "", nil)
+}
+func (s *Store) ListDevicesByUser(ctx context.Context, userID string) ([]Device, error) {
+	return s.listDevices(ctx, " WHERE user_id=?", []any{userID})
+}
+func (s *Store) Device(ctx context.Context, deviceID string) (Device, error) {
+	devices, err := s.listDevices(ctx, " WHERE id=?", []any{deviceID})
+	if err != nil {
+		return Device{}, err
+	}
+	if len(devices) != 1 {
+		return Device{}, sql.ErrNoRows
+	}
+	return devices[0], nil
+}
+func (s *Store) listDevices(ctx context.Context, where string, args []any) ([]Device, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT id,user_id,name,virtual_ip,os,arch,version,revoked,last_seen,created_at FROM devices"+where+" ORDER BY created_at", args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Device
+	defer func() { _ = rows.Close() }()
+	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
 		var rev int
@@ -313,6 +366,69 @@ func (s *Store) RevokeDevice(ctx context.Context, deviceID string) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE devices SET revoked=1 WHERE id=?", deviceID)
 	return err
 }
+func (s *Store) RenameDevice(ctx context.Context, deviceID, name string) error {
+	if strings.TrimSpace(name) == "" || len(name) > 128 {
+		return errors.New("device name must be between 1 and 128 characters")
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE devices SET name=? WHERE id=?", strings.TrimSpace(name), deviceID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+func (s *Store) SetDeviceVirtualIP(ctx context.Context, deviceID, virtualIP, network, reservedServerIP string) error {
+	ip := net.ParseIP(strings.TrimSpace(virtualIP))
+	_, subnet, err := net.ParseCIDR(network)
+	if err != nil || ip == nil || ip.To4() == nil || !subnet.Contains(ip) {
+		return errors.New("virtual IP must be an IPv4 address inside the TyxNet network")
+	}
+	ip = ip.To4()
+	networkIP := subnet.IP.To4()
+	serverIP := net.ParseIP(reservedServerIP).To4()
+	if serverIP == nil {
+		serverIP = append(net.IP(nil), networkIP...)
+		inc(serverIP)
+	}
+	broadcast := append(net.IP(nil), networkIP...)
+	for i := range broadcast {
+		broadcast[i] |= ^subnet.Mask[i]
+	}
+	if ip.Equal(networkIP) || ip.Equal(serverIP) || ip.Equal(broadcast) {
+		return errors.New("virtual IP is reserved for the network, server, or broadcast address")
+	}
+	res, err := s.db.ExecContext(ctx, "UPDATE devices SET virtual_ip=? WHERE id=?", ip.String(), deviceID)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return errors.New("virtual IP is already assigned to another device")
+		}
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) Setting(ctx context.Context, key string) (string, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, "SELECT value FROM server_settings WHERE key=?", key).Scan(&value)
+	return value, err
+}
+
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO server_settings(key,value,updated_at) VALUES(?,?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) TouchDevice(ctx context.Context, deviceID string) error {
+	_, err := s.db.ExecContext(ctx, "UPDATE devices SET last_seen=? WHERE id=? AND revoked=0", time.Now().UTC().Format(time.RFC3339Nano), deviceID)
+	return err
+}
 func (s *Store) DevicePublicKey(ctx context.Context, deviceID string) ([]byte, error) {
 	var key []byte
 	var revoked int
@@ -330,8 +446,8 @@ func (s *Store) Users(ctx context.Context) ([]User, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []User
+	defer func() { _ = rows.Close() }()
+	out := make([]User, 0)
 	for rows.Next() {
 		var u User
 		var disabled int
@@ -356,7 +472,7 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash, role str
 	if err != nil {
 		return User{}, err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err = tx.ExecContext(ctx, "INSERT INTO users(id,username,password_hash,created_at) VALUES(?,?,?,?)", u.ID, u.Username, passwordHash, u.CreatedAt.Format(time.RFC3339Nano)); err != nil {
 		return User{}, err
 	}
@@ -377,11 +493,38 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, q := range []string{"DELETE FROM sessions WHERE user_id=?", "DELETE FROM enrollment_tokens WHERE user_id=?", "DELETE FROM user_roles WHERE user_id=?", "DELETE FROM users WHERE id=?"} {
 		if _, err = tx.ExecContext(ctx, q, userID); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+func (s *Store) UpdateUser(ctx context.Context, userID string, disabled bool, role string) error {
+	roles := map[string]string{"admin": "role_admin", "operator": "role_operator", "member": "role_member", "viewer": "role_viewer"}
+	roleID, ok := roles[role]
+	if !ok {
+		return errors.New("invalid role")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, "UPDATE users SET disabled=? WHERE id=?", disabled, userID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM user_roles WHERE user_id=?", userID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO user_roles(user_id,role_id) VALUES(?,?)", userID, roleID); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
@@ -396,6 +539,56 @@ func (s *Store) CreateCommand(ctx context.Context, sender, device, typ string, t
 	c := Command{ID: id("cmd"), SenderUserID: sender, DeviceID: device, Type: typ, Status: "queued", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(ttl)}
 	_, err := s.db.ExecContext(ctx, "INSERT INTO commands(id,sender_user_id,device_id,type,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?)", c.ID, c.SenderUserID, c.DeviceID, c.Type, c.Status, c.CreatedAt.Format(time.RFC3339Nano), c.ExpiresAt.Format(time.RFC3339Nano))
 	return c, err
+}
+func (s *Store) ListCommands(ctx context.Context, limit int) ([]Command, error) {
+	return s.listCommands(ctx, limit, "", nil)
+}
+func (s *Store) ListCommandsByUser(ctx context.Context, userID string, limit int) ([]Command, error) {
+	return s.listCommands(ctx, limit, " JOIN devices d ON d.id=c.device_id WHERE d.user_id=?", []any{userID})
+}
+func (s *Store) listCommands(ctx context.Context, limit int, scope string, args []any) ([]Command, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, "SELECT c.id,c.sender_user_id,c.device_id,c.type,c.status,c.result,c.error,c.created_at,c.expires_at FROM commands c"+scope+" ORDER BY c.created_at DESC LIMIT ?", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]Command, 0)
+	for rows.Next() {
+		var c Command
+		var created, expires string
+		if err := rows.Scan(&c.ID, &c.SenderUserID, &c.DeviceID, &c.Type, &c.Status, &c.Result, &c.Error, &created, &expires); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		c.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditLog, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT id,COALESCE(actor_id,''),action,COALESCE(target_id,''),COALESCE(remote_ip,''),detail,created_at FROM audit_logs ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]AuditLog, 0)
+	for rows.Next() {
+		var a AuditLog
+		var created string
+		if err := rows.Scan(&a.ID, &a.ActorID, &a.Action, &a.TargetID, &a.RemoteIP, &a.Detail, &created); err != nil {
+			return nil, err
+		}
+		a.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 func (s *Store) Audit(ctx context.Context, actor, action, target, remoteIP, detail string) {
 	_, _ = s.db.ExecContext(ctx, "INSERT INTO audit_logs(actor_id,action,target_id,remote_ip,detail,created_at) VALUES(?,?,?,?,?,?)", actor, action, target, remoteIP, detail, time.Now().UTC().Format(time.RFC3339Nano))

@@ -5,15 +5,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"syscall"
+	"time"
+
+	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/client"
 	"github.com/fbeser/tyxnet/internal/config"
 	"github.com/fbeser/tyxnet/internal/installer"
 	"gopkg.in/yaml.v3"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 )
 
 func main() {
@@ -42,13 +47,37 @@ func run(a []string) error {
 	}
 	return errors.New("unknown command")
 }
-func loadArgs(name string, a []string) (config.Client, error) {
-	f := flag.NewFlagSet(name, flag.ContinueOnError)
+func runFlags(a []string) (config.Client, string, error) {
+	f := flag.NewFlagSet("run", flag.ContinueOnError)
 	p := f.String("config", "configs/client.yaml", "")
+	localWeb := f.Bool("local-web", false, "restrict the setup and status UI to this machine")
+	lanWeb := f.Bool("lan-web", false, "explicitly expose the UI on the LAN (deprecated; this is the default)")
 	if err := f.Parse(a); err != nil {
-		return config.Client{}, err
+		return config.Client{}, "", err
 	}
-	return config.LoadClient(*p)
+	if *localWeb && *lanWeb {
+		return config.Client{}, "", errors.New("--local-web and --lan-web cannot be used together")
+	}
+	c, err := config.LoadClient(*p)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return config.Client{}, "", err
+		}
+		c = config.DefaultClient()
+		c.ServerURL = "https://setup.invalid"
+		c.Name = "unconfigured"
+	}
+	if *localWeb {
+		c.LocalAddress = "127.0.0.1:9070"
+		c.AllowRemoteUI = false
+	} else if *lanWeb {
+		c.LocalAddress = "0.0.0.0:9070"
+		c.AllowRemoteUI = true
+	}
+	if err := c.Validate(); err != nil {
+		return config.Client{}, "", err
+	}
+	return c, *p, nil
 }
 func join(a []string) error {
 	f := flag.NewFlagSet("join", flag.ContinueOnError)
@@ -74,22 +103,49 @@ func join(a []string) error {
 	return nil
 }
 func serve(a []string) error {
-	c, err := loadArgs("run", a)
+	c, configPath, err := runFlags(a)
 	if err != nil {
 		return err
 	}
 	cl := client.New(c)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	srv := &http.Server{Addr: c.LocalAddress, Handler: cl.LocalHandler(), ReadHeaderTimeout: 5 * time.Second}
+	executable, _ := os.Executable()
+	executable, _ = filepath.Abs(executable)
+	workingDirectory, _ := os.Getwd()
+	configPath, _ = filepath.Abs(configPath)
+	companion := filepath.Join(filepath.Dir(executable), "tyxnet-tray")
+	if runtime.GOOS == "windows" {
+		companion += ".exe"
+	} else if runtime.GOOS != "darwin" {
+		companion = ""
+	}
+	trayToken := application.TrayToken()
+	startupArgs := []string{"run", "--config", configPath}
+	host, _, _ := net.SplitHostPort(c.LocalAddress)
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		startupArgs = append(startupArgs, "--local-web")
+	}
+	localURL := "http://127.0.0.1:9070"
+	if _, port, splitErr := net.SplitHostPort(c.LocalAddress); splitErr == nil {
+		localURL = "http://127.0.0.1:" + port
+	}
+	cl.ConfigureApplication(application.StartupSpec{ID: "tyxnet-client", DisplayName: "TyxNet Client", Executable: executable, WorkingDirectory: workingDirectory, Arguments: startupArgs, Companion: companion, CompanionArgs: []string{"--client-url", localURL}, TrayToken: trayToken}, trayToken, stop)
+	srv := &http.Server{Addr: c.LocalAddress, Handler: cl.LocalHandler(configPath), ReadHeaderTimeout: 5 * time.Second}
+	errCh := make(chan error, 2)
 	go func() {
 		<-ctx.Done()
 		x, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(x)
+		_ = srv.Shutdown(x)
 	}()
-	go srv.ListenAndServe()
-	return cl.Run(ctx)
+	go func() {
+		if listenErr := srv.ListenAndServe(); !errors.Is(listenErr, http.ErrServerClosed) {
+			errCh <- listenErr
+		}
+	}()
+	go func() { errCh <- cl.Run(ctx) }()
+	return <-errCh
 }
 func install(a []string) error {
 	f := flag.NewFlagSet("install", flag.ContinueOnError)

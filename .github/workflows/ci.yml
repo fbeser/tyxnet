@@ -16,10 +16,21 @@ jobs:
       - run: go vet ./...
       - uses: golangci/golangci-lint-action@v7
         with: {version: v2.1.6}
-      - run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...
-      - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...
-      - run: GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...
-      - run: GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/...
+      - run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
+      - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
+      - run: GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
+      - run: GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
+  desktop-tray:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: '1.24.x', cache: true}
+      - run: go build ./cmd/tyxnet-tray ./cmd/tyxnet-server-tray
+      - run: go test ./cmd/tyxnet-tray ./cmd/tyxnet-server-tray ./internal/application
   web:
     runs-on: ubuntu-latest
     steps:

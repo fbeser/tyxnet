@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TyxNet Client</title>
+  <link rel="stylesheet" href="/ui/app.css">
+  <link rel="stylesheet" href="/ui/startup.css">
+</head>
+<body>
+  <main class="shell">
+    <header><span class="logo">T</span><div><h1>TyxNet Client</h1><p>Private network connection</p></div><button id="logout" class="quiet" hidden>Sign out</button></header>
+    <section id="setup" class="card" hidden>
+      <span class="eyebrow">FIRST-TIME SETUP</span><h2>Connect this device</h2>
+      <p>Enter the server address and an enrollment token created in the server console.</p>
+      <form id="setup-form">
+        <label>Server URL<input id="server" type="url" placeholder="http://192.168.1.20:8443" required></label>
+        <label>Device name<input id="name" placeholder="office-pc" required maxlength="80"></label>
+        <label>Enrollment token<input id="token" type="password" placeholder="TYX-..." required autocomplete="off"></label>
+        <button type="submit">Connect device</button>
+      </form><p id="error" class="error" role="alert"></p>
+    </section>
+    <div id="app" hidden>
+      <section class="card compact">
+        <div class="status-head"><div><span class="eyebrow">THIS DEVICE</span><h2 id="connection">Connecting</h2></div><span id="dot" class="dot"></span></div>
+        <dl><div><dt>Virtual IP</dt><dd id="virtual-ip">—</dd></div><div><dt>Adapter</dt><dd id="adapter-name">—</dd></div><div><dt>Device ID</dt><dd id="device-id">—</dd></div><div><dt>Last connected</dt><dd id="last-connected">—</dd></div></dl>
+        <p id="last-error" class="error"></p>
+      </section>
+      <section id="management-login" class="card">
+        <span class="eyebrow">NETWORK MANAGEMENT</span><h2>Sign in to view devices</h2>
+        <p>Your server role determines which devices and controls are available.</p>
+        <form id="login-form"><label>Username<input id="username" required autocomplete="username"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><button>Sign in</button></form>
+        <p id="login-error" class="error" role="alert"></p>
+      </section>
+      <section id="network-devices" class="card" hidden>
+        <div class="section-head"><div><span class="eyebrow">TYXNET DEVICES</span><h2>Network devices</h2><p id="role-label"></p></div><button id="refresh-devices" class="quiet">Refresh</button></div>
+        <div id="startup-panel" class="startup-panel" hidden><div><strong>Background startup</strong><p>Start this client and its desktop companion automatically.</p></div><label class="startup-toggle"><input id="startup-enabled" type="checkbox"> Run at startup</label></div>
+        <div id="device-grid" class="device-grid"></div>
+      </section>
+    </div>
+    <div id="toast" class="toast"></div>
+  </main>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

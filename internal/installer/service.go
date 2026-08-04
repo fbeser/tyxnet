@@ -34,7 +34,7 @@ func Install(spec Spec) error {
 	if err := os.WriteFile(spec.Config, spec.ConfigData, 0600); err != nil {
 		return err
 	}
-	unit := fmt.Sprintf("[Unit]\nDescription=TyxNet %s\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nExecStart=%s run --config %s\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths=/var/lib/tyxnet /var/log/tyxnet /etc/tyxnet\n\n[Install]\nWantedBy=multi-user.target\n", spec.Name, dst, spec.Config)
+	unit := fmt.Sprintf("[Unit]\nDescription=TyxNet %s\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nExecStart=%s run --config %s\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nPrivateTmp=true\nProtectSystem=strict\nReadWritePaths=/var/lib/tyxnet /var/log/tyxnet /etc/tyxnet /etc/systemd/system\n\n[Install]\nWantedBy=multi-user.target\n", spec.Name, dst, spec.Config)
 	if err := os.WriteFile("/etc/systemd/system/"+spec.Name+".service", []byte(unit), 0644); err != nil {
 		return err
 	}

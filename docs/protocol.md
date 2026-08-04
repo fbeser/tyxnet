@@ -30,6 +30,16 @@ COMMAND_RESULT, DISCONNECT and ERROR.
 The current control channel implements the Ed25519 challenge portion over TLS,
 not this full UDP handshake.
 
+## HTTP control stream v1
+
+After the Ed25519 challenge, `/control/v1/connect` opens an SSE stream. Every
+JSON event includes `protocol_version: 1`. The initial `connected` event includes
+the authoritative `virtual_ip`, `virtual_network`, and `ping_interval_seconds`.
+Subsequent `ping` events repeat the current assignment and interval so a static
+IP change can be applied without reenrollment. A v1 client must ignore unknown JSON fields;
+this permits additive fields without a version change. Removing or changing the
+meaning or type of an existing field requires a new control endpoint version.
+
 ## Packet protection
 
 DATA and control payloads use ChaCha20-Poly1305. Header bytes are AAD. Nonces are
@@ -45,8 +55,9 @@ rate-limited. Never route before authentication and source validation.
 
 ## Lifecycle
 
-Default keepalive is 25 seconds. Reconnect uses 1, 2, 5, 10, 30, then 60 second
-delays. Target session lifetime is 15 minutes with proactive rekey before expiry;
+The default control ping interval is 25 seconds and administrators can persist a
+value from 5 seconds through 1 hour. Reconnect uses 1, 2, 5, 10, 30, then 60
+second delays. Target session lifetime is 15 minutes with proactive rekey before expiry;
 new ephemeral X25519 keys create a new session ID and reset replay state. Command
 restart/shutdown validity is at most two minutes. Deployments must cap handshake,
 authentication and per-session packet/bandwidth rates.

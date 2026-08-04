@@ -4,33 +4,63 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/subtle"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/auth"
 	"github.com/fbeser/tyxnet/internal/storage"
 )
 
 type Server struct {
-	store       *storage.Store
-	network     string
-	ttl         time.Duration
-	started     time.Time
-	log         *slog.Logger
-	limiter     *ipLimiter
-	challengeMu sync.Mutex
-	challenges  map[string]challenge
+	store           *storage.Store
+	network         string
+	ttl             time.Duration
+	started         time.Time
+	log             *slog.Logger
+	limiter         *ipLimiter
+	challengeMu     sync.Mutex
+	challenges      map[string]challenge
+	localBootstrap  bool
+	remoteBootstrap bool
+	adapterName     string
+	adapterAddress  string
+	pingIntervalNS  atomic.Int64
+	startupSpec     application.StartupSpec
+	trayToken       string
+	shutdown        func()
+	startupEnabled  func(application.StartupSpec) (bool, error)
+	setStartup      func(application.StartupSpec, bool) error
 }
+
+func (s *Server) SetAdapter(name, address string) {
+	s.adapterName = name
+	s.adapterAddress = address
+}
+
+func (s *Server) ConfigureApplication(spec application.StartupSpec, trayToken string, shutdown func()) {
+	s.startupSpec = spec
+	s.trayToken = trayToken
+	s.shutdown = shutdown
+}
+
+// AllowRemoteBootstrap permits first-admin setup from the listening network.
+// Callers must require an explicit operator opt-in before enabling it.
+func (s *Server) AllowRemoteBootstrap() { s.remoteBootstrap = true }
+
 type challenge struct {
 	nonce   []byte
 	expires time.Time
@@ -43,25 +73,163 @@ type ctxKey string
 
 const userKey ctxKey = "user"
 
-func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger) *Server {
-	return &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}}
+func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger, localBootstrap bool) *Server {
+	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, localBootstrap: localBootstrap, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup}
+	s.pingIntervalNS.Store(int64(25 * time.Second))
+	if value, err := store.Setting(context.Background(), "ping_interval"); err == nil {
+		if interval, parseErr := time.ParseDuration(value); parseErr == nil && validPingInterval(interval) {
+			s.pingIntervalNS.Store(int64(interval))
+		}
+	}
+	return s
 }
+
+func validPingInterval(interval time.Duration) bool {
+	return interval >= 5*time.Second && interval <= time.Hour
+}
+
+func (s *Server) pingInterval() time.Duration { return time.Duration(s.pingIntervalNS.Load()) }
+
+func (s *Server) SetDefaultPingInterval(interval time.Duration) {
+	if _, err := s.store.Setting(context.Background(), "ping_interval"); err == nil {
+		return
+	}
+	if validPingInterval(interval) {
+		s.pingIntervalNS.Store(int64(interval))
+	}
+}
+
+//go:embed web/*
+var embeddedWeb embed.FS
+
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { write(w, 200, map[string]string{"status": "ok"}) })
 	m.HandleFunc("POST /api/v1/auth/login", s.login)
+	m.HandleFunc("GET /api/v1/setup/status", s.setupStatus)
+	m.HandleFunc("POST /api/v1/setup", s.setup)
 	m.HandleFunc("POST /api/v1/enroll", s.enroll)
 	m.HandleFunc("POST /control/v1/challenge", s.deviceChallenge)
 	m.HandleFunc("POST /control/v1/connect", s.deviceConnect)
+	m.HandleFunc("GET /api/tray", s.trayStatus)
+	m.HandleFunc("POST /api/tray/startup", s.trayStartup)
+	m.HandleFunc("POST /api/tray/quit", s.trayQuit)
 	m.HandleFunc("GET /{$}", s.dashboard)
+	assets, _ := fs.Sub(embeddedWeb, "web")
+	assetHandler := http.StripPrefix("/ui/", http.FileServer(http.FS(assets)))
+	m.Handle("GET /ui/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		assetHandler.ServeHTTP(w, r)
+	}))
 	m.Handle("/api/v1/", s.authorized(http.HandlerFunc(s.api)))
 	return securityHeaders(s.rateLimit(m))
+}
+
+func (s *Server) trayAllowed(r *http.Request) bool {
+	provided := r.Header.Get("X-TyxNet-Tray-Token")
+	return remoteIsLoopback(r.RemoteAddr) && s.trayToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(s.trayToken)) == 1
+}
+
+func (s *Server) trayStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.trayAllowed(r) {
+		problem(w, 403, "forbidden", "local tray authentication required")
+		return
+	}
+	enabled, err := s.startupEnabled(s.startupSpec)
+	if err != nil {
+		problem(w, 500, "startup_status_failed", err.Error())
+		return
+	}
+	write(w, 200, map[string]any{"running": true, "startup_enabled": enabled})
+}
+
+func (s *Server) trayStartup(w http.ResponseWriter, r *http.Request) {
+	if !s.trayAllowed(r) {
+		problem(w, 403, "forbidden", "local tray authentication required")
+		return
+	}
+	s.updateStartup(w, r, storage.User{ID: "local-tray", Role: "admin"})
+}
+
+func (s *Server) trayQuit(w http.ResponseWriter, r *http.Request) {
+	if !s.trayAllowed(r) {
+		problem(w, 403, "forbidden", "local tray authentication required")
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	if s.shutdown != nil {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			s.shutdown()
+		}()
+	}
+}
+
+func (s *Server) updateStartup(w http.ResponseWriter, r *http.Request, actor storage.User) {
+	var in struct {
+		Enabled bool `json:"enabled"`
+	}
+	if decode(r, &in) != nil {
+		problem(w, 400, "invalid_request", "enabled is required")
+		return
+	}
+	if err := s.setStartup(s.startupSpec, in.Enabled); err != nil {
+		problem(w, 500, "startup_update_failed", err.Error())
+		return
+	}
+	s.store.Audit(r.Context(), actor.ID, "server.startup.update", "server", r.RemoteAddr, fmt.Sprint(in.Enabled))
+	write(w, 200, map[string]bool{"enabled": in.Enabled})
+}
+func remoteIsLoopback(remote string) bool {
+	host, _, err := net.SplitHostPort(remote)
+	ip := net.ParseIP(host)
+	return err == nil && ip != nil && ip.IsLoopback()
+}
+func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
+	n, err := s.store.UserCount(r.Context())
+	if err != nil {
+		problem(w, 500, "internal", "setup status failed")
+		return
+	}
+	write(w, 200, map[string]any{"required": n == 0, "enabled": s.bootstrapAllowed(r)})
+}
+func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
+	if !s.bootstrapAllowed(r) {
+		problem(w, 403, "setup_disabled", "initial web setup is not enabled for this request")
+		return
+	}
+	var in struct{ Username, Password string }
+	if decode(r, &in) != nil || strings.TrimSpace(in.Username) == "" {
+		problem(w, 400, "invalid_request", "username and password are required")
+		return
+	}
+	ph, err := auth.HashPassword(in.Password)
+	if err != nil {
+		problem(w, 400, "invalid_password", err.Error())
+		return
+	}
+	u, err := s.store.CreateInitialAdmin(r.Context(), strings.TrimSpace(in.Username), ph)
+	if err != nil {
+		problem(w, 409, "setup_complete", err.Error())
+		return
+	}
+	token, err := s.store.CreateSession(r.Context(), u.ID, s.ttl)
+	if err != nil {
+		problem(w, 500, "internal", "session creation failed")
+		return
+	}
+	s.store.Audit(r.Context(), u.ID, "setup.complete", u.ID, r.RemoteAddr, "")
+	write(w, 201, map[string]any{"access_token": token, "expires_in": int(s.ttl.Seconds()), "user": u})
+}
+
+func (s *Server) bootstrapAllowed(r *http.Request) bool {
+	return s.localBootstrap && (s.remoteBootstrap || remoteIsLoopback(r.RemoteAddr))
 }
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		next.ServeHTTP(w, r)
 	})
@@ -205,6 +373,7 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "authentication_failed", "invalid device proof")
 		return
 	}
+	_ = s.store.TouchDevice(r.Context(), in.DeviceID)
 	s.store.Audit(r.Context(), in.DeviceID, "device.connect", in.DeviceID, r.RemoteAddr, "")
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
@@ -213,16 +382,27 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "stream_unsupported", "streaming unsupported")
 		return
 	}
-	fmt.Fprint(w, "event: connected\ndata: {}\n\n")
+	device, err := s.store.Device(r.Context(), in.DeviceID)
+	if err != nil {
+		problem(w, 500, "internal", "device state unavailable")
+		return
+	}
+	connected, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": device.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds())})
+	_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connected)
 	f.Flush()
-	ticker := time.NewTicker(25 * time.Second)
-	defer ticker.Stop()
 	for {
+		timer := time.NewTimer(s.pingInterval())
 		select {
 		case <-r.Context().Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
-		case <-ticker.C:
-			fmt.Fprint(w, "event: keepalive\ndata: {}\n\n")
+		case <-timer.C:
+			_ = s.store.TouchDevice(r.Context(), in.DeviceID)
+			current, _ := s.store.Device(r.Context(), in.DeviceID)
+			payload, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": current.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds())})
+			_, _ = fmt.Fprintf(w, "event: ping\ndata: %s\n\n", payload)
 			f.Flush()
 		}
 	}
@@ -240,8 +420,94 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !permit(w, u, "device.view") {
 			return
 		}
-		v, err := s.store.ListDevices(r.Context())
+		var v []storage.Device
+		var err error
+		if auth.Role(u.Role) == auth.Member {
+			v, err = s.store.ListDevicesByUser(r.Context(), u.ID)
+		} else {
+			v, err = s.store.ListDevices(r.Context())
+		}
 		respond(w, v, err)
+	case r.Method == "PATCH" && strings.HasPrefix(path, "devices/"):
+		if !permit(w, u, "device.rename") {
+			return
+		}
+		id := strings.TrimPrefix(path, "devices/")
+		var in struct {
+			Name      *string
+			VirtualIP *string
+		}
+		if decode(r, &in) != nil {
+			problem(w, 400, "invalid_request", "invalid JSON")
+			return
+		}
+		if in.Name == nil && in.VirtualIP == nil {
+			problem(w, 400, "invalid_request", "name or virtual IP is required")
+			return
+		}
+		if in.VirtualIP != nil && !auth.Allowed(auth.Role(u.Role), "server.configure") {
+			problem(w, 403, "forbidden", "role does not allow static IP assignment")
+			return
+		}
+		if in.Name != nil {
+			if err := s.store.RenameDevice(r.Context(), id, *in.Name); err != nil {
+				problem(w, 400, "rename_failed", err.Error())
+				return
+			}
+			s.store.Audit(r.Context(), u.ID, "device.rename", id, r.RemoteAddr, "")
+		}
+		if in.VirtualIP != nil {
+			serverIP := strings.SplitN(s.adapterAddress, "/", 2)[0]
+			if err := s.store.SetDeviceVirtualIP(r.Context(), id, *in.VirtualIP, s.network, serverIP); err != nil {
+				problem(w, 400, "ip_assignment_failed", err.Error())
+				return
+			}
+			s.store.Audit(r.Context(), u.ID, "device.ip.assign", id, r.RemoteAddr, *in.VirtualIP)
+		}
+		write(w, 200, map[string]string{"status": "updated"})
+	case r.Method == "GET" && path == "server/settings":
+		if !permit(w, u, "server.configure") {
+			return
+		}
+		write(w, 200, map[string]any{"ping_interval_seconds": int(s.pingInterval().Seconds())})
+	case r.Method == "PATCH" && path == "server/settings":
+		if !permit(w, u, "server.configure") {
+			return
+		}
+		var in struct {
+			PingIntervalSeconds int `json:"ping_interval_seconds"`
+		}
+		if decode(r, &in) != nil {
+			problem(w, 400, "invalid_request", "invalid JSON")
+			return
+		}
+		interval := time.Duration(in.PingIntervalSeconds) * time.Second
+		if !validPingInterval(interval) {
+			problem(w, 400, "invalid_ping_interval", "ping interval must be between 5 and 3600 seconds")
+			return
+		}
+		if err := s.store.SetSetting(r.Context(), "ping_interval", interval.String()); err != nil {
+			problem(w, 500, "internal", "settings could not be saved")
+			return
+		}
+		s.pingIntervalNS.Store(int64(interval))
+		s.store.Audit(r.Context(), u.ID, "server.ping_interval.update", "server", r.RemoteAddr, interval.String())
+		write(w, 200, map[string]any{"ping_interval_seconds": in.PingIntervalSeconds})
+	case r.Method == "GET" && path == "server/startup":
+		if !permit(w, u, "server.configure") {
+			return
+		}
+		enabled, err := s.startupEnabled(s.startupSpec)
+		if err != nil {
+			problem(w, 500, "startup_status_failed", err.Error())
+			return
+		}
+		write(w, 200, map[string]bool{"enabled": enabled})
+	case r.Method == "PATCH" && path == "server/startup":
+		if !permit(w, u, "server.configure") {
+			return
+		}
+		s.updateStartup(w, r, u)
 	case r.Method == "GET" && path == "users":
 		if !permit(w, u, "user.view") {
 			return
@@ -258,12 +524,39 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		id := strings.TrimPrefix(path, "users/")
+		if id == u.ID {
+			problem(w, 400, "self_delete", "you cannot delete your active account")
+			return
+		}
 		if err := s.store.DeleteUser(r.Context(), id); err != nil {
 			problem(w, 409, "delete_failed", err.Error())
 			return
 		}
 		s.store.Audit(r.Context(), u.ID, "user.delete", id, r.RemoteAddr, "")
 		w.WriteHeader(204)
+	case r.Method == "PATCH" && strings.HasPrefix(path, "users/"):
+		if !permit(w, u, "user.create") {
+			return
+		}
+		id := strings.TrimPrefix(path, "users/")
+		if id == u.ID {
+			problem(w, 400, "self_update", "use another administrator to change your active account")
+			return
+		}
+		var in struct {
+			Disabled bool
+			Role     string
+		}
+		if decode(r, &in) != nil {
+			problem(w, 400, "invalid_request", "invalid JSON")
+			return
+		}
+		if err := s.store.UpdateUser(r.Context(), id, in.Disabled, in.Role); err != nil {
+			problem(w, 400, "user_update_failed", err.Error())
+			return
+		}
+		s.store.Audit(r.Context(), u.ID, "user.update", id, r.RemoteAddr, in.Role)
+		write(w, 200, map[string]string{"status": "updated"})
 	case r.Method == "GET" && path == "tokens":
 		if !permit(w, u, "token.view") {
 			return
@@ -300,7 +593,41 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && path == "server/status":
 		ds, _ := s.store.ListDevices(r.Context())
 		us, _ := s.store.Users(r.Context())
-		write(w, 200, map[string]any{"uptime_seconds": int(time.Since(s.started).Seconds()), "devices": len(ds), "users": len(us)})
+		cs, _ := s.store.ListCommands(r.Context(), 500)
+		online, active := 0, 0
+		onlineWindow := 3 * s.pingInterval()
+		if onlineWindow < 90*time.Second {
+			onlineWindow = 90 * time.Second
+		}
+		for _, d := range ds {
+			if d.LastSeen != nil && time.Since(*d.LastSeen) < onlineWindow && !d.Revoked {
+				online++
+			}
+		}
+		for _, c := range cs {
+			if c.Status == "queued" || c.Status == "delivered" || c.Status == "accepted" {
+				active++
+			}
+		}
+		write(w, 200, map[string]any{"uptime_seconds": int(time.Since(s.started).Seconds()), "devices": len(ds), "users": len(us), "online_devices": online, "offline_devices": len(ds) - online, "active_commands": active, "adapter_name": s.adapterName, "adapter_address": s.adapterAddress, "adapter_ready": s.adapterName != "", "ping_interval_seconds": int(s.pingInterval().Seconds())})
+	case r.Method == "GET" && path == "commands":
+		if !permit(w, u, "device.view") {
+			return
+		}
+		var v []storage.Command
+		var err error
+		if auth.Role(u.Role) == auth.Member {
+			v, err = s.store.ListCommandsByUser(r.Context(), u.ID, 200)
+		} else {
+			v, err = s.store.ListCommands(r.Context(), 200)
+		}
+		respond(w, v, err)
+	case r.Method == "GET" && path == "audit":
+		if !permit(w, u, "audit.view") {
+			return
+		}
+		v, err := s.store.ListAudit(r.Context(), 200)
+		respond(w, v, err)
 	case r.Method == "POST" && (strings.HasSuffix(path, "/restart") || strings.HasSuffix(path, "/shutdown") || strings.HasSuffix(path, "/disconnect")):
 		s.command(w, r, u, path)
 	default:
@@ -389,17 +716,15 @@ func permit(w http.ResponseWriter, u storage.User, p string) bool {
 	return true
 }
 
-var dashboardTemplate = template.Must(template.New("dashboard").Parse(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>TyxNet</title><style>body{font:16px system-ui;margin:3rem;max-width:900px;background:#101827;color:#e8eef8}.cards{display:flex;gap:1rem}.card{background:#1d2a3d;padding:1.4rem;border-radius:12px;min-width:140px}small{color:#9fb0c8}</style></head><body><h1>TyxNet</h1><p>Central virtual network management</p><div class="cards"><div class="card"><small>Devices</small><h2>{{.Devices}}</h2></div><div class="card"><small>Users</small><h2>{{.Users}}</h2></div><div class="card"><small>Uptime</small><h2>{{.Uptime}}</h2></div></div><p><small>Management operations require authentication through /api/v1.</small></p></body></html>`))
-
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	b, err := embeddedWeb.ReadFile("web/index.html")
+	if err != nil {
+		http.Error(w, "web UI unavailable", http.StatusInternalServerError)
 		return
 	}
-	ds, _ := s.store.ListDevices(r.Context())
-	us, _ := s.store.Users(r.Context())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = dashboardTemplate.Execute(w, map[string]any{"Devices": len(ds), "Users": len(us), "Uptime": time.Since(s.started).Round(time.Second)})
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(b)
 }
 func (s *Server) ListenAndServe(addr, cert, key string) error {
 	srv := &http.Server{Addr: addr, Handler: s.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}

@@ -1,5 +1,9 @@
 server: https://vpn.example.com:8443
 name: workshop-pc
 state_dir: ./client-state
-local_address: 127.0.0.1:9070
+local_address: 0.0.0.0:9070
+allow_remote_ui: true
 keepalive: 25s
+tunnel_enabled: true
+tunnel_name: "" # Empty derives a stable, server-specific TyxC-xxxxxxxx name.
+tunnel_mtu: 1280

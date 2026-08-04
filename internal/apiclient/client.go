@@ -37,7 +37,7 @@ func (c Client) Do(ctx context.Context, method, path string, in, out any) error 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("API %s: %s", resp.Status, string(b))

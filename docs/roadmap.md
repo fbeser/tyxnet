@@ -7,21 +7,27 @@ in-memory tunnel testing. Mostly implemented.
 
 ## Phase 2 — Linux data plane
 
-Complete Linux TUN configuration, central UDP handshake/tunnel, virtual-IP
+Connect the configured Linux TUN to the central UDP handshake/tunnel, virtual-IP
 routing, encrypted sessions, keepalive/rekey/reconnect and native installers.
 
 ## Phase 3 — Windows
 
-Wintun integration, Windows Service, route/firewall management and signed setup.
+Connect the existing server Wintun adapter to the data plane, then add client
+integration, Windows Service, route/firewall management and signed setup. The
+system-tray companion and stable Wintun/NLA identity are implemented.
 
 ## Phase 3b — macOS
 
-Darwin virtual-adapter integration, Keychain-backed identity, LaunchDaemon,
-route management, signed and notarized packaging, and an optional menu-bar UI.
+Connect the server utun adapter to the data plane, then add a production Network
+Extension client, Keychain-backed identity, LaunchDaemon,
+route management, and signed/notarized packaging. The development menu-bar
+companion is implemented.
 
 ## Phase 4 — management
 
-Full server/client web panels, richer RBAC/audit, safe command delivery/results.
+Server management console, client role-scoped device panel, and bootstrap are
+implemented. Remaining work: richer RBAC/audit search and safe command
+delivery/results.
 
 ## Phase 5 — scale
 

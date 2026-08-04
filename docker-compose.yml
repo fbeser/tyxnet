@@ -5,6 +5,10 @@ services:
       dockerfile: packaging/docker/Dockerfile
     image: ghcr.io/fbeser/tyxnet:latest
     restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     ports:
       - "127.0.0.1:8443:8443/tcp"
       - "51830:51830/udp"

@@ -10,7 +10,8 @@
   portable wire format. `pkg/protocol` is the only public shared package.
 - `internal/routing`, `internal/tunnel`: L3 policy and adapter abstractions.
 - `internal/platform/{linux,windows,darwin}`: build-tagged platform code only.
-- `web/` may contain future source assets; current UI is embedded Go templates.
+- `internal/control/web`: dependency-free management console assets embedded by
+  the server. `web/` is reserved for a future source build if one becomes useful.
 - `packaging/`, `configs/`, `docs/`: deployment, examples and authoritative docs.
 
 Server-only code must not leak into client packages. Portable protocol messages

@@ -9,6 +9,8 @@ for arch in amd64 arm64; do
 done
 build windows amd64 tyxnet-client tyxnet-client-windows-amd64.exe
 build windows amd64 tyxnetctl tyxnetctl-windows-amd64.exe
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui" -o dist/tyxnet-tray-windows-amd64.exe ./cmd/tyxnet-tray
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui" -o dist/tyxnet-server-tray-windows-amd64.exe ./cmd/tyxnet-server-tray
 for arch in amd64 arm64; do
   build darwin "$arch" tyxnet-server "tyxnet-server-darwin-$arch"
   build darwin "$arch" tyxnet-client "tyxnet-client-darwin-$arch"

@@ -7,17 +7,22 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/auth"
 	"github.com/fbeser/tyxnet/internal/config"
 	"github.com/fbeser/tyxnet/internal/control"
 	"github.com/fbeser/tyxnet/internal/installer"
+	"github.com/fbeser/tyxnet/internal/platform"
 	"github.com/fbeser/tyxnet/internal/storage"
 	"gopkg.in/yaml.v3"
 )
@@ -61,13 +66,24 @@ func usage() error {
 	fmt.Fprintln(os.Stderr, "usage: tyxnet-server <run|admin create|token create|install|uninstall|start|stop|restart|status|logs|version>")
 	return errors.New("invalid command")
 }
-func configFlag(name string, args []string) (string, error) {
-	f := flag.NewFlagSet(name, flag.ContinueOnError)
+func runFlags(args []string) (string, string, error) {
+	f := flag.NewFlagSet("run", flag.ContinueOnError)
 	p := f.String("config", "configs/server.yaml", "configuration file")
+	localWeb := f.Bool("local-web", false, "restrict the web console and first setup to this machine")
+	lanWeb := f.Bool("lan-web", false, "explicitly expose the web console on the LAN (deprecated; this is the default)")
 	if err := f.Parse(args); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return *p, nil
+	if *localWeb && *lanWeb {
+		return "", "", errors.New("--local-web and --lan-web cannot be used together")
+	}
+	mode := "config"
+	if *localWeb {
+		mode = "local"
+	} else if *lanWeb {
+		mode = "lan"
+	}
+	return *p, mode, nil
 }
 func open(path string) (config.Server, *storage.Store, error) {
 	c, err := config.LoadServer(path)
@@ -78,7 +94,7 @@ func open(path string) (config.Server, *storage.Store, error) {
 	return c, s, err
 }
 func runServer(args []string) error {
-	path, err := configFlag("run", args)
+	path, webMode, err := runFlags(args)
 	if err != nil {
 		return err
 	}
@@ -86,12 +102,69 @@ func runServer(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
+	switch webMode {
+	case "local":
+		c.ListenAddress = "127.0.0.1"
+		c.AllowRemoteSetup = false
+	case "lan":
+		c.ListenAddress = "0.0.0.0"
+		c.AllowInsecureHTTP = true
+		c.AllowRemoteSetup = true
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	h := control.New(s, c.Network, c.SessionTTL, log).Handler()
-	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", c.ListenAddress, c.APIPort), Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 0, IdleTimeout: 60 * time.Second}
+	loopback := net.ParseIP(c.ListenAddress).IsLoopback()
+	controlServer := control.New(s, c.Network, c.SessionTTL, log, loopback || c.AllowRemoteSetup)
+	controlServer.SetDefaultPingInterval(c.PingInterval)
+	if c.AllowRemoteSetup && !loopback {
+		controlServer.AllowRemoteBootstrap()
+		log.Warn("remote first-admin setup enabled; use only on a trusted LAN")
+	}
+	if c.TunnelEnabled {
+		_, network, parseErr := net.ParseCIDR(c.Network)
+		if parseErr != nil {
+			return fmt.Errorf("parse tunnel network: %w", parseErr)
+		}
+		ones, _ := network.Mask.Size()
+		addressCIDR := fmt.Sprintf("%s/%d", c.TunnelAddress, ones)
+		device, tunnelErr := platform.EnsureTunnel(context.Background(), c.TunnelName, addressCIDR, c.TunnelMTU)
+		if tunnelErr != nil {
+			return fmt.Errorf("ensure server virtual adapter (set tunnel_enabled: false for control-plane-only mode): %w", tunnelErr)
+		}
+		defer func() { _ = device.Close() }()
+		controlServer.SetAdapter(device.Name(), addressCIDR)
+		log.Info("virtual adapter ready", "name", device.Name(), "address", addressCIDR, "mtu", c.TunnelMTU)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	executable, _ := os.Executable()
+	executable, _ = filepath.Abs(executable)
+	workingDirectory, _ := os.Getwd()
+	configPath, _ := filepath.Abs(path)
+	companion := filepath.Join(filepath.Dir(executable), "tyxnet-server-tray")
+	if runtime.GOOS == "windows" {
+		companion += ".exe"
+	} else if runtime.GOOS != "darwin" {
+		companion = ""
+	}
+	trayToken := application.TrayToken()
+	webScheme := "http"
+	if c.TLSCert != "" {
+		webScheme = "https"
+	}
+	startupArgs := []string{"run", "--config", configPath}
+	switch webMode {
+	case "local":
+		startupArgs = append(startupArgs, "--local-web")
+	case "lan":
+		startupArgs = append(startupArgs, "--lan-web")
+	}
+	controlServer.ConfigureApplication(application.StartupSpec{ID: "tyxnet-server", DisplayName: "TyxNet Server", Executable: executable, WorkingDirectory: workingDirectory, Arguments: startupArgs, Companion: companion, CompanionArgs: []string{"--server-url", fmt.Sprintf("%s://127.0.0.1:%d", webScheme, c.APIPort)}, TrayToken: trayToken}, trayToken, stop)
+	h := controlServer.Handler()
+	srv := &http.Server{Addr: fmt.Sprintf("%s:%d", c.ListenAddress, c.APIPort), Handler: h, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 0, IdleTimeout: 60 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -133,7 +206,7 @@ func adminCreate(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	u, err := s.CreateAdmin(context.Background(), *username, ph)
 	if err == nil {
 		fmt.Printf("Admin created: %s (%s)\n", u.Username, u.ID)
@@ -153,7 +226,7 @@ func tokenCreate(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	u, _, err := s.Authenticate(context.Background(), *username)
 	if err != nil {
 		return fmt.Errorf("find user: %w", err)
@@ -180,6 +253,18 @@ func install(args []string) error {
 	c.APIPort = *api
 	c.TunnelPort = *tun
 	c.Network = *network
+	_, parsedNetwork, err := net.ParseCIDR(c.Network)
+	if err != nil {
+		return fmt.Errorf("parse network: %w", err)
+	}
+	serverIP := append(net.IP(nil), parsedNetwork.IP.To4()...)
+	for i := len(serverIP) - 1; i >= 0; i-- {
+		serverIP[i]++
+		if serverIP[i] != 0 {
+			break
+		}
+	}
+	c.TunnelAddress = serverIP.String()
 	c.TLSCert = *tlsCert
 	c.TLSKey = *tlsKey
 	c.Database = "/var/lib/tyxnet/tyxnet.db"

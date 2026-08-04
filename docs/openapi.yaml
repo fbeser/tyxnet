@@ -37,6 +37,10 @@ paths:
     post: {security: [{bearerAuth: []}], responses: {'204': {description: Logged out}}}
   /api/v1/auth/me:
     get: {security: [{bearerAuth: []}], responses: {'200': {description: Current user}}}
+  /api/v1/setup/status:
+    get: {description: Reports whether first-user setup is required and enabled for this request, responses: {'200': {description: Setup state}}}
+  /api/v1/setup:
+    post: {description: Creates the first administrator on loopback or an explicitly enabled trusted-LAN listener and returns a bearer session, responses: {'201': {description: Administrator created}, '403': {description: Web setup disabled}, '409': {description: Setup already complete}}}
   /api/v1/enroll:
     post:
       description: Consumes an enrollment token and records only the device public key.
@@ -45,10 +49,15 @@ paths:
   /control/v1/challenge:
     post: {description: Issues a one-use 30-second device challenge, responses: {'200': {description: Challenge}}}
   /control/v1/connect:
-    post: {description: Verifies Ed25519 proof and opens an SSE control stream, responses: {'200': {description: Event stream}, '403': {description: Invalid proof}}}
+    post: {description: Verifies Ed25519 proof and opens the versioned SSE control stream carrying authoritative virtual-IP and ping-interval state, responses: {'200': {description: Event stream}, '403': {description: Invalid proof}}}
   /api/v1/devices:
-    get: {security: [{bearerAuth: []}], responses: {'200': {description: Devices}}}
+    get: {description: Admin/operator/viewer receive all devices; member receives only devices owned by that user, security: [{bearerAuth: []}], responses: {'200': {description: Role-scoped devices}}}
   /api/v1/devices/{id}:
+    patch:
+      description: Renames a device or, for administrators, assigns a persistent virtual IPv4 address inside the TyxNet network.
+      security: [{bearerAuth: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Device renamed}}
     delete:
       security: [{bearerAuth: []}]
       parameters: [{in: path, name: id, required: true, schema: {type: string}}]
@@ -65,6 +74,10 @@ paths:
     get: {security: [{bearerAuth: []}], responses: {'200': {description: Users}}}
     post: {security: [{bearerAuth: []}], responses: {'201': {description: User created}}}
   /api/v1/users/{id}:
+    patch:
+      security: [{bearerAuth: []}]
+      parameters: [{in: path, name: id, required: true, schema: {type: string}}]
+      responses: {'200': {description: Role or disabled state updated}}
     delete:
       security: [{bearerAuth: []}]
       parameters: [{in: path, name: id, required: true, schema: {type: string}}]
@@ -78,4 +91,31 @@ paths:
       parameters: [{in: path, name: id, required: true, schema: {type: string}}]
       responses: {'204': {description: Revoked}}
   /api/v1/server/status:
-    get: {security: [{bearerAuth: []}], responses: {'200': {description: Status counters}}}
+    get: {security: [{bearerAuth: []}], responses: {'200': {description: Status counters and virtual-adapter readiness, name, and address}}}
+  /api/v1/server/settings:
+    get: {description: Returns administrator-managed runtime settings including the device ping interval, security: [{bearerAuth: []}], responses: {'200': {description: Server settings}}}
+    patch: {description: Persists the device ping interval in seconds (5-3600), security: [{bearerAuth: []}], responses: {'200': {description: Updated settings}}}
+  /api/v1/server/startup:
+    get: {description: Returns the operating-system startup registration state, security: [{bearerAuth: []}], responses: {'200': {description: Startup state}}}
+    patch: {description: Administrator-only creation or removal of the platform startup registration, security: [{bearerAuth: []}], responses: {'200': {description: Updated startup state}}}
+  /api/v1/commands:
+    get: {security: [{bearerAuth: []}], responses: {'200': {description: Recent command queue entries}}}
+  /api/v1/audit:
+    get: {security: [{bearerAuth: []}], responses: {'200': {description: Recent audit events}}}
+  /api/management/login:
+    post: {description: Client-local allowlisted proxy to server login, responses: {'200': {description: Server bearer session}}}
+  /api/management/me:
+    get: {description: Client-local allowlisted proxy for current server user, security: [{bearerAuth: []}], responses: {'200': {description: Current role}}}
+  /api/management/devices:
+    get: {description: Client-local proxy for the role-scoped server device list, security: [{bearerAuth: []}], responses: {'200': {description: Permitted devices}}}
+  /api/management/devices/{id}/{action}:
+    post: {description: Client-local proxy for an RBAC-checked allowlisted device action, security: [{bearerAuth: []}], responses: {'202': {description: Command queued}}}
+  /api/management/startup:
+    get: {description: Returns this client's platform startup state after server-admin authentication, security: [{bearerAuth: []}], responses: {'200': {description: Startup state}}}
+    patch: {description: Creates or removes this client's platform startup registration after server-admin authentication, security: [{bearerAuth: []}], responses: {'200': {description: Updated startup state}}}
+  /api/tray:
+    get: {description: Token-authenticated loopback-only tray snapshot, responses: {'200': {description: Local connection, startup state and cached permitted devices}, '403': {description: Invalid local tray authentication}}}
+  /api/tray/startup:
+    post: {description: Token-authenticated loopback-only platform startup toggle, responses: {'200': {description: Updated startup state}, '403': {description: Invalid local tray authentication}}}
+  /api/tray/quit:
+    post: {description: Token-authenticated loopback-only graceful application shutdown, responses: {'202': {description: Shutdown accepted}, '403': {description: Invalid local tray authentication}}}

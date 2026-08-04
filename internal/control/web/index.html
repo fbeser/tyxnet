@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>TyxNet Console</title>
+  <link rel="stylesheet" href="/ui/app.css">
+  <link rel="stylesheet" href="/ui/startup.css">
+</head>
+<body>
+  <main id="auth" class="auth-shell">
+    <section class="auth-card">
+      <div class="brand"><span class="brand-mark">T</span><div><strong>TyxNet</strong><small>Private network console</small></div></div>
+      <div id="setup-view" hidden>
+        <p class="eyebrow">First-time setup</p>
+        <h1>Create the administrator</h1>
+        <p class="muted">This setup is available only through the local server address.</p>
+        <form id="setup-form">
+          <label>Username<input name="username" value="admin" autocomplete="username" required maxlength="64"></label>
+          <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="12"></label>
+          <label>Confirm password<input name="confirm" type="password" autocomplete="new-password" required minlength="12"></label>
+          <button class="primary" type="submit">Create administrator</button>
+        </form>
+      </div>
+      <div id="setup-disabled" hidden>
+        <p class="eyebrow">Setup required</p><h1>Local setup only</h1>
+        <p class="muted">Start the server on <code>127.0.0.1</code> and open this page locally, or create the first administrator with the CLI.</p>
+      </div>
+      <div id="login-view">
+        <p class="eyebrow">Welcome back</p><h1>Sign in</h1>
+        <form id="login-form">
+          <label>Username<input name="username" value="admin" autocomplete="username" required></label>
+          <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+          <button class="primary" type="submit">Sign in</button>
+        </form>
+      </div>
+      <p id="auth-error" class="error" role="alert"></p>
+    </section>
+  </main>
+
+  <div id="console" class="console" hidden>
+    <aside>
+      <div class="brand"><span class="brand-mark">T</span><div><strong>TyxNet</strong><small>Management console</small></div></div>
+      <nav id="nav">
+        <button data-page="dashboard" class="active">Overview</button>
+        <button data-page="devices">Devices</button>
+        <button data-page="users">Users</button>
+        <button data-page="tokens">Enrollment tokens</button>
+        <button data-page="commands">Commands</button>
+        <button data-page="audit">Audit log</button>
+      </nav>
+      <div class="account"><span id="account-name"></span><small id="account-role"></small><button id="logout" class="ghost">Sign out</button></div>
+    </aside>
+
+    <main class="content">
+      <header><div><p class="eyebrow">TyxNet Server</p><h1 id="page-title">Overview</h1></div><button id="refresh" class="secondary">Refresh</button></header>
+
+      <section id="page-dashboard" class="page">
+        <div id="stats" class="stats"></div>
+        <article class="panel"><div class="panel-head"><div><h2>Server status</h2><p>Current control-plane health</p></div><span class="badge success">Running</span></div><dl class="details"><div><dt>Topology</dt><dd>Central star</dd></div><div><dt>Network mode</dt><dd>Split tunnel</dd></div><div><dt>Data plane</dt><dd>Experimental</dd></div><div><dt>Management API</dt><dd>v1</dd></div></dl></article>
+        <article id="ping-settings" class="panel form-panel" hidden><div><h2>Device ping interval</h2><p>How often connected clients report that they are online.</p></div><form id="ping-form" class="inline-form"><label>Seconds<input name="ping_interval_seconds" type="number" min="5" max="3600" required></label><button class="primary">Save interval</button></form></article>
+        <article id="startup-settings" class="panel form-panel" hidden><div><h2>Background startup</h2><p>Start the server and desktop companion automatically without an elevation prompt at sign-in.</p></div><label class="startup-toggle"><input id="startup-enabled" type="checkbox"> Run at startup</label></article>
+      </section>
+
+      <section id="page-devices" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Devices</h2><p>Assign persistent virtual IP addresses and manage enrolled members.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Virtual IP</th><th>Platform</th><th>Status</th><th>Last seen</th><th>Actions</th></tr></thead><tbody id="devices-body"></tbody></table></div></article></section>
+
+      <section id="page-users" class="page" hidden>
+        <article class="panel form-panel"><div><h2>Add user</h2><p>Create a console identity and assign a role.</p></div><form id="user-form" class="inline-form"><input name="username" placeholder="Username" required maxlength="64"><input name="password" type="password" placeholder="Password (12+ characters)" required minlength="12"><select name="role"><option>member</option><option>viewer</option><option>operator</option><option>admin</option></select><button class="primary">Add user</button></form></article>
+        <article class="panel"><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>State</th><th>Created</th><th>Actions</th></tr></thead><tbody id="users-body"></tbody></table></div></article>
+      </section>
+
+      <section id="page-tokens" class="page" hidden>
+        <article class="panel form-panel"><div><h2>Create enrollment token</h2><p>The secret is displayed only once.</p></div><form id="token-form" class="inline-form"><select name="user_id" id="token-user" required></select><input name="expires" value="24h" placeholder="Expires (24h)" required><input name="max_uses" type="number" value="1" min="1" max="100" required><button class="primary">Create token</button></form></article>
+        <article class="panel"><div class="table-wrap"><table><thead><tr><th>ID</th><th>User</th><th>Expires</th><th>Usage</th><th>State</th><th>Actions</th></tr></thead><tbody id="tokens-body"></tbody></table></div></article>
+      </section>
+
+      <section id="page-commands" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Command queue</h2><p>Only predefined types are accepted. Delivery and result reporting remain Experimental.</p></div></div><div class="table-wrap"><table><thead><tr><th>Command</th><th>Device</th><th>Type</th><th>Status</th><th>Created</th><th>Expires</th></tr></thead><tbody id="commands-body"></tbody></table></div></article></section>
+      <section id="page-audit" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Audit log</h2><p>Security and management events</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Target</th><th>Remote address</th></tr></thead><tbody id="audit-body"></tbody></table></div></article></section>
+    </main>
+  </div>
+
+  <dialog id="secret-dialog"><form method="dialog"><p class="eyebrow">Enrollment token</p><h2>Copy this token now</h2><p class="muted">It cannot be retrieved again after this dialog closes.</p><pre id="secret-value"></pre><div class="dialog-actions"><button type="button" id="copy-secret" class="secondary">Copy</button><button class="primary">Done</button></div></form></dialog>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/ui/app.js" defer></script>
+</body>
+</html>

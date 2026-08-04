@@ -1,5 +1,6 @@
 # Server UI
 
-The current minimal dashboard is compiled as a Go template in
-`internal/control/server.go`. Future source assets belong here and their build
-output must be embedded into the server binary.
+The working management console is implemented as dependency-free HTML, CSS, and
+JavaScript under `internal/control/web` and embedded into the server binary.
+This directory is reserved for a future source build if the UI grows beyond the
+current no-build architecture.

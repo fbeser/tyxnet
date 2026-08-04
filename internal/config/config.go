@@ -4,7 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -14,39 +17,72 @@ type Server struct {
 	ListenAddress     string        `yaml:"listen_address"`
 	APIPort           int           `yaml:"api_port"`
 	TunnelPort        int           `yaml:"tunnel_port"`
+	TunnelEnabled     bool          `yaml:"tunnel_enabled"`
+	TunnelName        string        `yaml:"tunnel_name"`
+	TunnelAddress     string        `yaml:"tunnel_address"`
+	TunnelMTU         int           `yaml:"tunnel_mtu"`
 	Network           string        `yaml:"network"`
 	Database          string        `yaml:"database"`
 	TLSCert           string        `yaml:"tls_cert"`
 	TLSKey            string        `yaml:"tls_key"`
 	AllowInsecureHTTP bool          `yaml:"allow_insecure_http"`
+	AllowRemoteSetup  bool          `yaml:"allow_remote_setup"`
 	SessionTTL        time.Duration `yaml:"session_ttl"`
+	PingInterval      time.Duration `yaml:"ping_interval"`
 }
 
 type Client struct {
-	ServerURL    string        `yaml:"server"`
-	Name         string        `yaml:"name"`
-	StateDir     string        `yaml:"state_dir"`
-	LocalAddress string        `yaml:"local_address"`
-	Keepalive    time.Duration `yaml:"keepalive"`
+	ServerURL     string        `yaml:"server"`
+	Name          string        `yaml:"name"`
+	StateDir      string        `yaml:"state_dir"`
+	LocalAddress  string        `yaml:"local_address"`
+	AllowRemoteUI bool          `yaml:"allow_remote_ui"`
+	Keepalive     time.Duration `yaml:"keepalive"`
+	TunnelEnabled bool          `yaml:"tunnel_enabled"`
+	TunnelName    string        `yaml:"tunnel_name"`
+	TunnelMTU     int           `yaml:"tunnel_mtu"`
 }
 
 func DefaultServer() Server {
-	return Server{ListenAddress: "127.0.0.1", APIPort: 8443, TunnelPort: 51830, Network: "10.90.0.0/24", Database: "tyxnet.db", SessionTTL: 15 * time.Minute}
+	return Server{ListenAddress: "0.0.0.0", APIPort: 8443, TunnelPort: 51830, TunnelEnabled: true, TunnelName: "TyxNet", TunnelAddress: "10.90.0.1", TunnelMTU: 1280, Network: "10.90.0.0/24", Database: "tyxnet.db", AllowInsecureHTTP: true, AllowRemoteSetup: true, SessionTTL: 15 * time.Minute, PingInterval: 25 * time.Second}
 }
 func DefaultClient() Client {
-	return Client{StateDir: "./client-state", LocalAddress: "127.0.0.1:9070", Keepalive: 25 * time.Second}
+	return Client{StateDir: "./client-state", LocalAddress: "0.0.0.0:9070", AllowRemoteUI: true, Keepalive: 25 * time.Second, TunnelEnabled: true, TunnelMTU: 1280}
 }
 
 func LoadServer(path string) (Server, error) {
 	c := DefaultServer()
-	return c, load(path, &c, c.Validate)
+	if err := load(path, &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
 }
 func LoadClient(path string) (Client, error) {
 	c := DefaultClient()
-	return c, load(path, &c, c.Validate)
+	if err := load(path, &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
 }
 
-func load(path string, out any, validate func() error) error {
+func SaveClient(path string, c Client) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("encode client config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil && filepath.Dir(path) != "." {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return fmt.Errorf("write client config: %w", err)
+	}
+	return nil
+}
+
+func load(path string, out any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
@@ -54,7 +90,7 @@ func load(path string, out any, validate func() error) error {
 	if err := yaml.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("decode config: %w", err)
 	}
-	return validate()
+	return nil
 }
 
 func (c Server) Validate() error {
@@ -67,6 +103,9 @@ func (c Server) Validate() error {
 	if c.APIPort == c.TunnelPort {
 		return errors.New("API and tunnel ports must differ")
 	}
+	if c.PingInterval < 5*time.Second || c.PingInterval > time.Hour {
+		return errors.New("ping_interval must be between 5s and 1h")
+	}
 	ip, n, err := net.ParseCIDR(c.Network)
 	if err != nil || ip.To4() == nil {
 		return errors.New("network must be an IPv4 CIDR")
@@ -78,6 +117,21 @@ func (c Server) Validate() error {
 	if c.Database == "" {
 		return errors.New("database is required")
 	}
+	if c.TunnelEnabled {
+		if strings.TrimSpace(c.TunnelName) == "" || len(c.TunnelName) > 15 {
+			return errors.New("tunnel_name must be between 1 and 15 characters")
+		}
+		address := net.ParseIP(c.TunnelAddress)
+		if address == nil || address.To4() == nil || !n.Contains(address) {
+			return errors.New("tunnel_address must be an IPv4 address inside network")
+		}
+		if address.Equal(n.IP) || isIPv4Broadcast(address, n) {
+			return errors.New("tunnel_address cannot be the network or broadcast address")
+		}
+		if c.TunnelMTU < 576 || c.TunnelMTU > 9000 {
+			return errors.New("tunnel_mtu must be between 576 and 9000")
+		}
+	}
 	if (c.TLSCert == "") != (c.TLSKey == "") {
 		return errors.New("tls_cert and tls_key must be configured together")
 	}
@@ -87,19 +141,45 @@ func (c Server) Validate() error {
 	return nil
 }
 
+func isIPv4Broadcast(ip net.IP, n *net.IPNet) bool {
+	base := n.IP.To4()
+	v := ip.To4()
+	if base == nil || v == nil {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		if v[i] != base[i]|^n.Mask[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (c Client) Validate() error {
-	if c.ServerURL == "" {
-		return errors.New("server is required")
+	u, err := url.Parse(c.ServerURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("server must be an http or https URL")
 	}
 	if c.Name == "" {
 		return errors.New("name is required")
 	}
 	host, _, err := net.SplitHostPort(c.LocalAddress)
-	if err != nil || host != "127.0.0.1" {
-		return errors.New("local_address must bind to 127.0.0.1")
+	if err != nil || net.ParseIP(host) == nil {
+		return errors.New("local_address must contain an IP address and port")
+	}
+	if host != "127.0.0.1" && host != "::1" && !c.AllowRemoteUI {
+		return errors.New("non-loopback local_address requires explicit allow_remote_ui")
 	}
 	if c.Keepalive < 5*time.Second {
 		return errors.New("keepalive must be at least 5s")
+	}
+	if c.TunnelEnabled {
+		if len(c.TunnelName) > 15 {
+			return errors.New("tunnel_name must be at most 15 characters")
+		}
+		if c.TunnelMTU < 576 || c.TunnelMTU > 9000 {
+			return errors.New("tunnel_mtu must be between 576 and 9000")
+		}
 	}
 	return nil
 }
