@@ -3,15 +3,17 @@ GO ?= go
 BIN := bin
 
 build: build-server build-client build-tray build-server-tray build-cli
-build-server:
+$(BIN):
+	mkdir -p $(BIN)
+build-server: | $(BIN)
 	$(GO) build -o $(BIN)/tyxnet-server ./cmd/tyxnet-server
-build-client:
+build-client: | $(BIN)
 	$(GO) build -o $(BIN)/tyxnet-client ./cmd/tyxnet-client
-build-tray:
+build-tray: | $(BIN)
 	$(GO) build -o $(BIN)/tyxnet-tray ./cmd/tyxnet-tray
-build-server-tray:
+build-server-tray: | $(BIN)
 	$(GO) build -o $(BIN)/tyxnet-server-tray ./cmd/tyxnet-server-tray
-build-cli:
+build-cli: | $(BIN)
 	$(GO) build -o $(BIN)/tyxnetctl ./cmd/tyxnetctl
 test:
 	$(GO) test ./...
