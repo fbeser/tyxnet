@@ -29,6 +29,17 @@ terminates TLS and automatically renews the certificate; TyxNet TCP 8443 remains
 private to the Compose network. Clients require the HTTPS URL before the server
 will issue encrypted UDP data-plane credentials.
 
+Without a domain, `docker-compose.ip-https.yml` requests a Let's Encrypt
+short-lived certificate for a static public IP and serves it on host TCP 18443.
+Its Caddyfile sets the IP as the default SNI so IP-literal clients receive the
+managed certificate even when their TLS ClientHello omits SNI.
+It defaults the ACME HTTP listener to host TCP 18080 so CasaOS can retain TCP 80.
+Forward WAN TCP 443 to host TCP 18443 for TLS-ALPN-01 validation, or WAN TCP 80
+to host TCP 18080 for HTTP-01. Also forward WAN TCP 18443 for user access and
+WAN UDP 51830 for tunneled traffic. Keep the Compose project name and working
+directory stable so the existing `tyxnet_tyxnet-data` volume is reused; never
+use `down -v` during migration.
+
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open
 `http://<SERVER-LAN-IP>:8443` from an administrator workstation. This shortcut

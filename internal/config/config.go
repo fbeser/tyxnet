@@ -158,12 +158,16 @@ func isIPv4Broadcast(ip net.IP, n *net.IPNet) bool {
 }
 
 func (c Client) Validate() error {
-	u, err := url.Parse(c.ServerURL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return errors.New("server must be an http or https URL")
+	serverURL := strings.TrimSpace(c.ServerURL)
+	name := strings.TrimSpace(c.Name)
+	if (serverURL == "") != (name == "") {
+		return errors.New("server and name must either both be set or both be empty")
 	}
-	if c.Name == "" {
-		return errors.New("name is required")
+	if serverURL != "" {
+		u, err := url.Parse(serverURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return errors.New("server must be an http or https URL")
+		}
 	}
 	host, _, err := net.SplitHostPort(c.LocalAddress)
 	if err != nil || net.ParseIP(host) == nil {

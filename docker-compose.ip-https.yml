@@ -19,12 +19,14 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    command: ["reverse-proxy", "--from", "https://${TYXNET_DOMAIN:?set TYXNET_DOMAIN in .env}", "--to", "http://tyxnet-server:8443"]
+    command: ["run", "--config", "/etc/caddy/Caddyfile"]
+    environment:
+      TYXNET_PUBLIC_IP: "${TYXNET_PUBLIC_IP}"
     ports:
-      - "80:80/tcp"
-      - "443:443/tcp"
-      - "443:443/udp"
+      - "${TYXNET_HTTP_CHALLENGE_PORT:-18080}:80/tcp"
+      - "${TYXNET_HTTPS_PORT:-18443}:443/tcp"
     volumes:
+      - ./Caddyfile.ip:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
 

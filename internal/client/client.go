@@ -64,9 +64,11 @@ type Client struct {
 	State           *State
 	HTTP            *http.Client
 	key             ed25519.PrivateKey
+	configMu        sync.RWMutex
 	setupMu         sync.Mutex
-	ready           chan struct{}
-	readyOnce       sync.Once
+	configurationCh chan struct{}
+	connectionMu    sync.Mutex
+	connectionStop  context.CancelFunc
 	managementMu    sync.RWMutex
 	managementToken string
 	managementUser  storage.User
@@ -88,7 +90,34 @@ type Client struct {
 }
 
 func New(c config.Client) *Client {
-	return &Client{Config: c, State: &State{Started: time.Now()}, HTTP: &http.Client{Timeout: 30 * time.Second}, ready: make(chan struct{}), ensureTunnel: platform.EnsureTunnel, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, executeCommand: commands.ExecuteSystem, handledCommands: map[string]time.Time{}}
+	return &Client{Config: c, State: &State{Started: time.Now()}, HTTP: &http.Client{Timeout: 30 * time.Second}, configurationCh: make(chan struct{}, 1), ensureTunnel: platform.EnsureTunnel, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, executeCommand: commands.ExecuteSystem, handledCommands: map[string]time.Time{}}
+}
+
+func (c *Client) configuration() config.Client {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+	return c.Config
+}
+
+func (c *Client) setConfiguration(cfg config.Client) {
+	c.configMu.Lock()
+	c.Config = cfg
+	c.configMu.Unlock()
+}
+
+func (c *Client) notifyConfigurationChanged() {
+	select {
+	case c.configurationCh <- struct{}{}:
+	default:
+	}
+}
+
+func (c *Client) cancelConnection() {
+	c.connectionMu.Lock()
+	if c.connectionStop != nil {
+		c.connectionStop()
+	}
+	c.connectionMu.Unlock()
 }
 
 func (c *Client) ConfigureApplication(spec application.StartupSpec, trayToken string, shutdown func()) {
@@ -97,10 +126,11 @@ func (c *Client) ConfigureApplication(spec application.StartupSpec, trayToken st
 	c.shutdown = shutdown
 }
 func (c *Client) Join(ctx context.Context, token string) error {
+	cfg := c.configuration()
 	if strings.TrimSpace(token) == "" {
 		return errors.New("enrollment token is required")
 	}
-	if _, err := os.Stat(filepath.Join(c.Config.StateDir, "identity.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "identity.json")); err == nil {
 		return errors.New("client is already configured")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check identity: %w", err)
@@ -109,17 +139,17 @@ func (c *Client) Join(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	in := map[string]any{"Token": token, "Name": c.Config.Name, "OS": runtime.GOOS, "Arch": runtime.GOARCH, "Version": buildinfo.Version, "public_key": priv.Public().(ed25519.PublicKey)}
+	in := map[string]any{"Token": token, "Name": cfg.Name, "OS": runtime.GOOS, "Arch": runtime.GOARCH, "Version": buildinfo.Version, "public_key": priv.Public().(ed25519.PublicKey)}
 	var d storage.Device
 	if err = c.request(ctx, "POST", "/api/v1/enroll", in, &d); err != nil {
 		return err
 	}
-	if err = os.MkdirAll(c.Config.StateDir, 0700); err != nil {
+	if err = os.MkdirAll(cfg.StateDir, 0700); err != nil {
 		return err
 	}
 	p := persisted{DeviceID: d.ID, VirtualIP: d.VirtualIP, PrivateKey: priv}
 	b, _ := json.Marshal(p)
-	if err = os.WriteFile(filepath.Join(c.Config.StateDir, "identity.json"), b, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(cfg.StateDir, "identity.json"), b, 0600); err != nil {
 		return err
 	}
 	c.key = priv
@@ -128,11 +158,12 @@ func (c *Client) Join(ctx context.Context, token string) error {
 	c.State.VirtualIP = d.VirtualIP
 	c.State.Configured = true
 	c.State.mu.Unlock()
-	c.readyOnce.Do(func() { close(c.ready) })
+	c.notifyConfigurationChanged()
 	return nil
 }
 func (c *Client) load() error {
-	b, err := os.ReadFile(filepath.Join(c.Config.StateDir, "identity.json"))
+	cfg := c.configuration()
+	b, err := os.ReadFile(filepath.Join(cfg.StateDir, "identity.json"))
 	if err != nil {
 		return fmt.Errorf("load identity: %w", err)
 	}
@@ -158,15 +189,38 @@ func (c *Client) Run(ctx context.Context) error {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-c.ready:
-		}
 	}
 	backoff := []time.Duration{time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second, time.Minute}
 	for i := 0; ; i++ {
-		if err := c.connect(ctx); err != nil {
+		c.State.mu.RLock()
+		configured := c.State.Configured
+		c.State.mu.RUnlock()
+		if !configured {
+			c.closeAdapter()
+			i = 0
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-c.configurationCh:
+			}
+			continue
+		}
+		connectionContext, stopConnection := context.WithCancel(ctx)
+		c.connectionMu.Lock()
+		c.connectionStop = stopConnection
+		c.connectionMu.Unlock()
+		err := c.connect(connectionContext)
+		stopConnection()
+		c.connectionMu.Lock()
+		c.connectionStop = nil
+		c.connectionMu.Unlock()
+		c.State.mu.RLock()
+		configured = c.State.Configured
+		c.State.mu.RUnlock()
+		if !configured {
+			continue
+		}
+		if err != nil {
 			c.State.mu.Lock()
 			c.State.Connected = false
 			if errors.Is(err, errReconnectRequested) {
@@ -189,6 +243,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 func (c *Client) connect(ctx context.Context) error {
+	cfg := c.configuration()
 	var challenge struct {
 		Challenge string `json:"challenge"`
 	}
@@ -201,7 +256,7 @@ func (c *Client) connect(ctx context.Context) error {
 	}
 	sig := ed25519.Sign(c.key, nonce)
 	body, _ := json.Marshal(map[string]string{"DeviceID": c.State.DeviceID, "Signature": base64.RawStdEncoding.EncodeToString(sig)})
-	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.Config.ServerURL, "/")+"/control/v1/connect", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(cfg.ServerURL, "/")+"/control/v1/connect", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -353,12 +408,13 @@ func (c *Client) applyServerState(ctx context.Context, virtualIP, virtualNetwork
 	currentNetwork := c.State.VirtualNetwork
 	c.State.mu.Unlock()
 	if changedIP || changedNetwork {
+		cfg := c.configuration()
 		p := persisted{DeviceID: deviceID, VirtualIP: currentIP, VirtualNetwork: currentNetwork, PrivateKey: c.key}
 		b, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(c.Config.StateDir, "identity.json"), b, 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(cfg.StateDir, "identity.json"), b, 0600); err != nil {
 			return fmt.Errorf("save assigned virtual IP: %w", err)
 		}
 	}
@@ -366,7 +422,8 @@ func (c *Client) applyServerState(ctx context.Context, virtualIP, virtualNetwork
 }
 
 func (c *Client) ensureClientAdapter(ctx context.Context, virtualIP, virtualNetwork string) error {
-	if !c.Config.TunnelEnabled {
+	cfg := c.configuration()
+	if !cfg.TunnelEnabled {
 		return nil
 	}
 	if virtualIP == "" || virtualNetwork == "" {
@@ -399,11 +456,11 @@ func (c *Client) ensureClientAdapter(ctx context.Context, virtualIP, virtualNetw
 		c.adapter = nil
 		c.adapterAddress = ""
 	}
-	name := c.Config.TunnelName
+	name := cfg.TunnelName
 	if name == "" {
-		name = clientAdapterName(c.Config.ServerURL)
+		name = clientAdapterName(cfg.ServerURL)
 	}
-	device, err := c.ensureTunnel(ctx, name, address, c.Config.TunnelMTU)
+	device, err := c.ensureTunnel(ctx, name, address, cfg.TunnelMTU)
 	if err != nil {
 		return fmt.Errorf("ensure client virtual adapter: %w", err)
 	}
@@ -443,6 +500,7 @@ func (c *Client) closeDataPlane() {
 }
 
 func (c *Client) configureDataPlane(bootstrap dataplane.Bootstrap) error {
+	cfg := c.configuration()
 	c.adapterMu.Lock()
 	adapter := c.adapter
 	c.adapterMu.Unlock()
@@ -456,13 +514,13 @@ func (c *Client) configureDataPlane(bootstrap dataplane.Bootstrap) error {
 	c.dataPlaneMu.Lock()
 	defer c.dataPlaneMu.Unlock()
 	if c.dataPlane == nil {
-		dataPlane, err := dataplane.NewClient(adapter, assignedIP, deviceID, c.Config.TunnelMTU)
+		dataPlane, err := dataplane.NewClient(adapter, assignedIP, deviceID, cfg.TunnelMTU)
 		if err != nil {
 			return err
 		}
 		c.dataPlane = dataPlane
 	}
-	if err := c.dataPlane.Configure(c.Config.ServerURL, c.Config.TunnelEndpoint, bootstrap); err != nil {
+	if err := c.dataPlane.Configure(cfg.ServerURL, cfg.TunnelEndpoint, bootstrap); err != nil {
 		return err
 	}
 	c.State.mu.Lock()
@@ -479,8 +537,9 @@ func (c *Client) request(ctx context.Context, method, path string, in, out any) 
 	return c.requestWithToken(ctx, method, path, "", in, out)
 }
 func (c *Client) requestWithToken(ctx context.Context, method, path, token string, in, out any) error {
+	cfg := c.configuration()
 	b, _ := json.Marshal(in)
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.Config.ServerURL, "/")+path, bytes.NewReader(b))
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(cfg.ServerURL, "/")+path, bytes.NewReader(b))
 	if err != nil {
 		return err
 	}
@@ -506,6 +565,48 @@ func (c *Client) requestWithToken(ctx context.Context, method, path, token strin
 //go:embed web/*
 var embeddedWeb embed.FS
 
+func clientSameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	return origin == "" || origin == "http://"+r.Host || origin == "https://"+r.Host
+}
+
+func (c *Client) forgetServer(configPath string) error {
+	cfg := c.configuration()
+	identityPath := filepath.Join(cfg.StateDir, "identity.json")
+	if err := os.Remove(identityPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove client identity: %w", err)
+	}
+	cfg.ServerURL = ""
+	cfg.TunnelEndpoint = ""
+	cfg.Name = ""
+	c.setConfiguration(cfg)
+	c.cancelConnection()
+	c.closeAdapter()
+	c.managementMu.Lock()
+	c.managementToken = ""
+	c.managementUser = storage.User{}
+	c.managementNodes = nil
+	c.managementMu.Unlock()
+	c.State.mu.Lock()
+	c.State.Connected = false
+	c.State.DeviceID = ""
+	c.State.VirtualIP = ""
+	c.State.VirtualNetwork = ""
+	c.State.PingInterval = 0
+	c.State.AdapterName = ""
+	c.State.AdapterAddress = ""
+	c.State.AdapterReady = false
+	c.State.DataPlaneReady = false
+	c.State.LastConnected = time.Time{}
+	c.State.LastError = ""
+	c.State.Configured = false
+	c.State.mu.Unlock()
+	if err := config.SaveClient(configPath, cfg); err != nil {
+		return fmt.Errorf("save unconfigured client: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) LocalHandler(configPath string) http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /api/status", func(w http.ResponseWriter, _ *http.Request) {
@@ -517,12 +618,12 @@ func (c *Client) LocalHandler(configPath string) http.Handler {
 	m.HandleFunc("POST /api/setup", func(w http.ResponseWriter, r *http.Request) {
 		c.setupMu.Lock()
 		defer c.setupMu.Unlock()
-		origin := r.Header.Get("Origin")
-		if origin != "" && origin != "http://"+r.Host && origin != "https://"+r.Host {
+		if !clientSameOrigin(r) {
 			http.Error(w, "Cross-origin setup is not allowed", http.StatusForbidden)
 			return
 		}
-		identityPath := filepath.Join(c.Config.StateDir, "identity.json")
+		cfg := c.configuration()
+		identityPath := filepath.Join(cfg.StateDir, "identity.json")
 		if _, err := os.Stat(identityPath); err == nil {
 			http.Error(w, "Client is already configured", http.StatusConflict)
 			return
@@ -540,14 +641,13 @@ func (c *Client) LocalHandler(configPath string) http.Handler {
 			http.Error(w, "Invalid setup request", http.StatusBadRequest)
 			return
 		}
-		cfg := c.Config
 		cfg.ServerURL = strings.TrimSpace(in.Server)
 		cfg.Name = strings.TrimSpace(in.Name)
 		if err := cfg.Validate(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		c.Config = cfg
+		c.setConfiguration(cfg)
 		if err := config.SaveClient(configPath, cfg); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -559,6 +659,30 @@ func (c *Client) LocalHandler(configPath string) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"configured": true, "device_id": c.State.DeviceID, "virtual_ip": c.State.VirtualIP})
+	})
+	m.HandleFunc("DELETE /api/configuration", func(w http.ResponseWriter, r *http.Request) {
+		if !clientRemoteIsLoopback(r.RemoteAddr) {
+			http.Error(w, "Client reset is restricted to this device", http.StatusForbidden)
+			return
+		}
+		if !clientSameOrigin(r) {
+			http.Error(w, "Cross-origin reset is not allowed", http.StatusForbidden)
+			return
+		}
+		c.setupMu.Lock()
+		defer c.setupMu.Unlock()
+		c.State.mu.RLock()
+		configured := c.State.Configured
+		c.State.mu.RUnlock()
+		if !configured {
+			http.Error(w, "Client is not configured", http.StatusConflict)
+			return
+		}
+		if err := c.forgetServer(configPath); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	m.HandleFunc("POST /api/management/login", c.managementLogin)
 	m.HandleFunc("POST /api/management/logout", c.managementLogout)

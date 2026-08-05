@@ -279,6 +279,46 @@ func TestWebSetupEnrollsAndPersistsClient(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"configured":true`)) {
 		t.Fatalf("status: %s", w.Body.String())
 	}
+
+	adapter := &fakeTunnel{name: "TyxC-test"}
+	client.adapter = adapter
+	client.State.AdapterReady = true
+	connectionCancelled := false
+	client.connectionMu.Lock()
+	client.connectionStop = func() { connectionCancelled = true }
+	client.connectionMu.Unlock()
+
+	r = httptest.NewRequest(http.MethodDelete, "/api/configuration", nil)
+	r.RemoteAddr = "192.0.2.10:50000"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("remote reset: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "identity.json")); err != nil {
+		t.Fatalf("remote reset changed identity: %v", err)
+	}
+
+	r = httptest.NewRequest(http.MethodDelete, "/api/configuration", nil)
+	r.RemoteAddr = "127.0.0.1:50000"
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("local reset: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StateDir, "identity.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("identity remains after reset: %v", err)
+	}
+	resetConfig, err := config.LoadClient(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resetConfig.ServerURL != "" || resetConfig.Name != "" || resetConfig.TunnelEndpoint != "" {
+		t.Fatalf("server configuration remains after reset: %+v", resetConfig)
+	}
+	if client.State.Configured || client.State.DeviceID != "" || client.State.VirtualIP != "" || !adapter.closed || !connectionCancelled {
+		t.Fatalf("runtime state was not reset: %+v adapter_closed=%t connection_cancelled=%t", client.State, adapter.closed, connectionCancelled)
+	}
 }
 
 func TestEmbeddedClientAssetsIncludeVirtualIPCopy(t *testing.T) {
@@ -293,6 +333,9 @@ func TestEmbeddedClientAssetsIncludeVirtualIPCopy(t *testing.T) {
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("function copyText")) || !bytes.Contains(w.Body.Bytes(), []byte("data-copy")) {
 		t.Fatal("client virtual IP copy support is missing")
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("/api/configuration")) {
+		t.Fatal("client server reset action is missing")
 	}
 }
 

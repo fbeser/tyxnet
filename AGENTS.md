@@ -60,6 +60,9 @@ The server console and client UI are embedded no-build assets. Keep responses
 defensive against missing/null collections, preserve responsive SVG content
 inside its viewBox, and support clipboard fallbacks where the browser Clipboard
 API is unavailable. UI behavior changes require embedded-asset or handler tests.
+Destructive client-local actions such as forgetting enrollment must be restricted
+to loopback requests, cancel active control/data-plane work, remove local identity
+material and clearly state that server-side device revocation is separate.
 
 Docker runs the server as the container entrypoint, so platform startup controls
 must report unavailable rather than invoking systemd. Public deployments use the

@@ -124,6 +124,87 @@ renews the public certificate automatically. Open `https://vpn.example.com` and
 configure every client with that HTTPS URL. Do not expose the server's internal
 TCP `8443` listener when using this stack.
 
+#### Public-IP HTTPS without a domain
+
+TyxNet can also use a publicly trusted, short-lived Let's Encrypt certificate
+for a static public IPv4 or IPv6 address. This path was verified on Raspberry Pi
+5 with Debian 12, Docker 20.10 and legacy Compose 1.29. The certificate is valid
+for about six days; Caddy renews it automatically, so its data volume and an
+ACME validation route must remain available.
+
+Download the IP-specific stack and set the public IP:
+
+```bash
+mkdir -p tyxnet && cd tyxnet
+curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.ip-https.yml
+curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/Caddyfile.ip
+printf 'TYXNET_PUBLIC_IP=203.0.113.10\nTYXNET_HTTP_CHALLENGE_PORT=18080\nTYXNET_HTTPS_PORT=18443\n' > .env
+```
+
+Replace `203.0.113.10` with the host's public IP. If an existing TyxNet Compose
+stack is running in this directory, stop it without deleting its volume:
+
+```bash
+sudo docker-compose -p tyxnet -f docker-compose.yml down
+sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml config
+sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml pull
+sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml up -d
+```
+
+Never add `-v` to `down`; the existing `tyxnet_tyxnet-data` volume contains the
+database and is reused because the project name remains `tyxnet`. Compose v2
+users can replace `docker-compose` with `docker compose`.
+
+The defaults keep CasaOS or another gateway on Raspberry Pi TCP `80`: Caddy
+binds host TCP `18080` for ACME HTTP validation and host TCP `18443` for HTTPS.
+The supplied Caddyfile also sets the public IP as `default_sni`; this is required
+for browsers and clients that omit SNI when connecting directly to an IP address.
+Configure the modem with either ACME validation path and the public service
+ports:
+
+```text
+# TLS-ALPN-01 validation; TCP 80 is not required when this path works
+WAN TCP 443   -> RASPBERRY_PI_LAN_IP TCP 18443
+
+# Optional HTTP-01 alternative when host TCP 80 is occupied
+WAN TCP 80    -> RASPBERRY_PI_LAN_IP TCP 18080
+
+# User access and encrypted TyxNet tunnel
+WAN TCP 18443 -> RASPBERRY_PI_LAN_IP TCP 18443
+WAN UDP 51830 -> RASPBERRY_PI_LAN_IP UDP 51830
+```
+
+At least one standard ACME route, WAN TCP `443` or WAN TCP `80`, must reach
+Caddy. The dashboard and enrolled clients then use:
+
+```text
+https://PUBLIC_IP:18443
+```
+
+Verify the containers, certificate and local proxy path:
+
+```bash
+sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml ps
+sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml logs -f caddy
+openssl s_client -connect 127.0.0.1:18443 -servername PUBLIC_IP -verify_return_error </dev/null
+curl --resolve PUBLIC_IP:18443:127.0.0.1 https://PUBLIC_IP:18443/
+```
+
+If these checks pass but the public URL does not open, test from mobile data
+with Wi-Fi disabled. Many home routers do not support NAT loopback. Confirm that
+the modem forwards TCP `18443` to the Raspberry Pi's active Ethernet address,
+not a second Wi-Fi address. During the external test,
+`sudo tcpdump -ni any 'tcp port 18443'` shows whether the connection reaches the
+host: no incoming SYN means the problem is still in the modem, ISP firewall or
+CGNAT path.
+
+CasaOS may import the two Compose services as separate applications and rename
+their containers, which removes the `tyxnet-server` Docker DNS alias and causes
+Caddy to return `502`. Prefer starting this stack directly with the documented
+`docker-compose -p tyxnet` command. If `docker-compose ... ps` does not list the
+running containers, inspect `docker ps` and the Caddy logs before changing the
+upstream; do not hard-code a transient container IP.
+
 Already enrolled clients keep their device identity; only change `server:` to
 the new HTTPS URL and restart TyxNet. Windows stores this file at
 `C:\ProgramData\TyxNet\client.yaml`; macOS stores it under
@@ -168,8 +249,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.0/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.0/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.1/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.1/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 
@@ -305,7 +386,11 @@ systemd service.
 
 Install **TyxNet Client.app** from the universal DMG, open the menu-bar icon, and
 select **Open Web Console**. Enter the server URL, device name, and enrollment
-token. The local UI is available at `http://127.0.0.1:9070`.
+token. The local UI is available at `http://127.0.0.1:9070`. **Leave server**
+removes the saved server URL, enrollment identity, active tunnel, and local
+management session so the client can enroll again. It is restricted to a
+loopback browser request and does not delete the server-side device record;
+revoke that old record separately from the server console.
 
 macOS packet routing remains experimental and a production Network Extension is
 not implemented. See [macOS client notes](docs/macos-client.md).
@@ -315,7 +400,7 @@ not implemented. See [macOS client notes](docs/macos-client.md).
 Install the x64 MSI, launch **TyxNet Client**, and use its tray menu to open the
 local enrollment console. The launcher requests administrator access and uses
 the bundled Wintun runtime. The local UI is available at
-`http://127.0.0.1:9070`.
+`http://127.0.0.1:9070` and provides the same local-only **Leave server** reset.
 
 See [Windows client notes](docs/windows-client.md).
 
@@ -385,7 +470,8 @@ Private keys and tokens are never written into server configuration YAML.
 
 | Port | Protocol | Purpose |
 |---:|---|---|
-| 443 | TCP/UDP | Public HTTPS through Caddy (HTTPS Compose stack) |
+| 443 | TCP/UDP | Public HTTPS or ACME validation through Caddy |
+| 18443 | TCP | Optional public-IP HTTPS endpoint mapped to Caddy |
 | 8443 | TCP | Direct/LAN dashboard, enrollment, and control APIs |
 | 51830 | UDP | Encrypted virtual-IP packet tunnel |
 | 9070 | TCP | Local client enrollment and status UI |

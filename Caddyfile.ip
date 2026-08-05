@@ -1,0 +1,14 @@
+{
+	default_sni {$TYXNET_PUBLIC_IP}
+}
+
+https://{$TYXNET_PUBLIC_IP} {
+	tls {
+		issuer acme {
+			dir https://acme-v02.api.letsencrypt.org/directory
+			profile shortlived
+		}
+	}
+
+	reverse_proxy tyxnet-server:8443
+}

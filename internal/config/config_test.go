@@ -115,6 +115,22 @@ func TestClientTunnelValidation(t *testing.T) {
 	}
 }
 
+func TestClientAllowsUnconfiguredState(t *testing.T) {
+	c := DefaultClient()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unconfigured client: %v", err)
+	}
+	c.ServerURL = "https://vpn.example.com"
+	if err := c.Validate(); err == nil {
+		t.Fatal("server without device name was accepted")
+	}
+	c.ServerURL = ""
+	c.Name = "office-pc"
+	if err := c.Validate(); err == nil {
+		t.Fatal("device name without server was accepted")
+	}
+}
+
 func TestLoadValidatesDecodedConfiguration(t *testing.T) {
 	dir := t.TempDir()
 	clientPath := filepath.Join(dir, "client.yaml")
