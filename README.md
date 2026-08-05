@@ -89,7 +89,7 @@ plane remains incomplete; see the platform documents.
 
 ## Requirements
 
-- Go 1.24 or newer
+- Go 1.25 or newer
 - Administrator on Windows, root on macOS, or Linux root/CAP_NET_ADMIN and
   `/dev/net/tun` for native adapter work
 - systemd and root for native Linux service installation
@@ -193,13 +193,14 @@ native macOS and Windows client service packaging is planned.
 
 ## Docker server installation (optional)
 
-`configs/server.docker.yaml` explicitly opts into plaintext HTTP inside the
-container. Compose publishes the API only on host `127.0.0.1`; place an HTTPS
-reverse proxy on the same host in front of it, or mount certificate files and
-enable TLS in the server configuration.
+The default Compose file pulls the published multiarch image, so Raspberry Pi
+and x64 hosts do not compile TyxNet locally. It exposes plaintext HTTP to the
+trusted LAN for first setup; place an HTTPS reverse proxy in front of it before
+using it on an untrusted network.
 
 ```bash
-docker compose up -d --build
+curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.yml
+docker compose up -d
 docker compose logs -f tyxnet-server
 ```
 
@@ -207,7 +208,8 @@ Compose grants the container only the `NET_ADMIN` capability and `/dev/net/tun`
 device required by the adapter. On Docker Desktop, this adapter exists inside
 Docker's Linux VM/container namespace, not as a Windows or macOS host adapter.
 
-Release images can be published as `ghcr.io/fbeser/tyxnet:<tag>`.
+Release images are available for `linux/amd64` and `linux/arm64` as
+`ghcr.io/fbeser/tyxnet:<tag>` and `ghcr.io/fbeser/tyxnet:latest`.
 
 ## Native Linux server installation
 

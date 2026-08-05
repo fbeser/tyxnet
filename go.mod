@@ -1,11 +1,11 @@
 module github.com/fbeser/tyxnet
 
-go 1.24.0
+go 1.25.0
 
 require (
 	fyne.io/systray v1.12.2
-	golang.org/x/crypto v0.37.0
-	golang.org/x/sys v0.32.0
+	golang.org/x/crypto v0.54.0
+	golang.org/x/sys v0.47.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.36.1
@@ -19,7 +19,7 @@ require (
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/exp v0.0.0-20230315142452-642cacee5cc0 // indirect
-	golang.org/x/net v0.39.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	modernc.org/libc v1.61.13 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

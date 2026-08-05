@@ -9,7 +9,7 @@ network: 10.90.0.0/24
 database: /var/lib/tyxnet/tyxnet.db
 tls_cert: ""
 tls_key: ""
-allow_insecure_http: true # Compose publishes TCP on 127.0.0.1 only.
+allow_insecure_http: true # Compose is intended only for a trusted LAN unless TLS is added.
 allow_remote_setup: false
 session_ttl: 15m
 ping_interval: 25s

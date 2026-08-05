@@ -14,6 +14,12 @@ and receive a kernel-selected number each time. Set `tunnel_enabled: false` only
 for control-plane-only development. Adapter creation does not yet provide
 end-to-end connectivity because the UDP data plane remains incomplete.
 
+For Docker on amd64 or arm64, download `docker-compose.yml` and run
+`docker compose up -d`. Compose pulls the published GHCR image instead of
+compiling on the host. The default publishes TCP 8443 to the trusted LAN for
+first setup and UDP 51830 for the tunnel; configure TLS before untrusted-network
+exposure.
+
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open
 `http://<SERVER-LAN-IP>:8443` from an administrator workstation. This shortcut

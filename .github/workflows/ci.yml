@@ -8,14 +8,14 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version: '1.24.x', cache: true}
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: {go-version: '1.26.x', cache: true}
       - run: test -z "$(gofmt -l cmd internal pkg)"
       - run: go test -race ./...
       - run: go vet ./...
-      - uses: golangci/golangci-lint-action@v7
-        with: {version: v2.1.6}
+      - uses: golangci/golangci-lint-action@v9
+        with: {version: v2.12.2}
       - run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
       - run: GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
       - run: GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/tyxnet-server ./cmd/tyxnet-client ./cmd/tyxnetctl
@@ -26,28 +26,28 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version: '1.24.x', cache: true}
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: {go-version: '1.26.x', cache: true}
       - run: go build ./cmd/tyxnet-tray ./cmd/tyxnet-server-tray
       - run: go test ./cmd/tyxnet-tray ./cmd/tyxnet-server-tray ./internal/application
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: test -f internal/control/server.go
   docker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with: {context: ., file: packaging/docker/Dockerfile, push: false}
   vulnerability:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with: {go-version: '1.24.x'}
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with: {go-version: '1.26.x'}
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
