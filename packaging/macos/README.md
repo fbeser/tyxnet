@@ -1,18 +1,23 @@
-# macOS packaging status
+# macOS packaging
 
-This directory is a packaging scaffold, not a finished installer. The supplied
-LaunchDaemon plist shows the intended service boundary. The native
-`tyxnet-tray` development binary provides a role-aware menu-bar menu, but no
-signed/notarized `.app` bundle is produced yet. Client packet routing and a
-production Network Extension also remain incomplete. See
-`docs/macos-client.md` for the remaining requirements.
+Build the universal Intel/Apple Silicon DMG on macOS with:
 
-The `tyxnet-server-tray` development binary provides the equivalent server
-menu-bar status and web-console shortcut. Run `bash scripts/start-server-macos.sh`
-to build and launch it with the server. It is also an unsigned development
-binary rather than a packaged `.app`.
+```text
+sh scripts/package-macos.sh 0.1.0
+```
 
-The development web and tray startup switches register a root LaunchDaemon and
-user LaunchAgent. They are removed when the switch is cleared. The tray's
-**Quit TyxNet** action uses an authenticated loopback request to stop the core
-process before closing the menu-bar companion.
+The DMG contains `TyxNet Client.app` and `TyxNet Server.app`. Each app requests
+administrator access for the native tunnel process and runs its menu-bar
+companion as the logged-in user. Mutable configuration is stored under
+`~/Library/Application Support/TyxNet`, with logs under `~/Library/Logs/TyxNet`.
+Both application bundles include a native multi-resolution macOS icon.
+
+Local builds use ad-hoc signing. Public distribution still requires an Apple
+Developer ID signature and notarization. Client packet routing and a production
+Network Extension also remain incomplete. See `docs/macos-client.md` for the
+remaining requirements.
+
+Run `bash scripts/start-client-macos.sh` or
+`bash scripts/start-server-macos.sh` for local development without creating the
+DMG. The web and tray startup switches register a root LaunchDaemon and user
+LaunchAgent. They are removed when the switch is cleared.

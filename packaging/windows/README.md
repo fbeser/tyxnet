@@ -1,18 +1,26 @@
-# Windows packaging status
+# Windows packaging
+
+Build the unsigned x64 MSI on macOS with:
+
+```text
+brew install msitools
+sh scripts/package-windows.sh 0.1.0
+```
+
+The installer places the server, client, tray companions, CLI, and verified
+Wintun 0.14.1 files under `Program Files\TyxNet`. Start-menu shortcuts request
+administrator access and keep mutable configuration and logs under
+`ProgramData\TyxNet`. The installer is unsigned until it is passed through a
+Windows code-signing pipeline.
 
 The native server supports Wintun adapter creation. The repository does not
-bundle Wintun: `scripts/install-wintun.ps1` downloads the official 0.14.1 archive,
-verifies its pinned SHA-256 checksum, and installs the architecture-specific DLL
-and license beside `tyxnet-server.exe`.
+commit Wintun binaries; the packaging script downloads the official 0.14.1
+archive and verifies its pinned SHA-256 checksum before including the x64 DLL
+and license.
 
-A role-aware `tyxnet-tray.exe` notification-area companion is implemented and
-the development start script launches it separately from the connectivity
-process. A production WiX installer and Windows Service remain planned. They will install
-under `Program Files\TyxNet`, register Automatic startup, configure fixed firewall
-rules, preserve Wintun notices, and keep connectivity independent of the tray UI.
+Automatic startup is configured from the tray after the first launch. A native
+Windows Service, installer-managed firewall rules, and Authenticode signing
+remain planned.
 
-The server development launcher also builds and starts
-`tyxnet-server-tray.exe`. It shows local server availability and opens the
-server web console. The tray and web startup switch creates or removes an
-elevated Scheduled Task, and quitting the tray gracefully stops the elevated
-server process.
+The server and client tray companions show local availability, open the web
+console, and can gracefully stop their core process.

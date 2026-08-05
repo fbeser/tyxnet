@@ -50,8 +50,7 @@ func main() {
 }
 
 func onReady() {
-	systray.SetTemplateIcon(trayIcon(), trayIcon())
-	systray.SetTitle("TyxNet")
+	systray.SetIcon(trayIcon())
 	systray.SetTooltip("TyxNet Client")
 	systray.SetOnTapped(func() { _ = openBrowser(clientURL) })
 

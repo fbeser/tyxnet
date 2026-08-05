@@ -1,4 +1,4 @@
-.PHONY: build build-server build-client build-tray build-server-tray build-cli test test-race vet lint fmt web docker clean release
+.PHONY: build build-server build-client build-tray build-server-tray build-cli test test-race vet lint fmt web docker clean release package-windows package-macos
 GO ?= go
 BIN := bin
 
@@ -32,3 +32,7 @@ clean:
 	rm -rf $(BIN) dist
 release:
 	sh scripts/release.sh
+package-windows:
+	sh scripts/package-windows.sh
+package-macos:
+	sh scripts/package-macos.sh

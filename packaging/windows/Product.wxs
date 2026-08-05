@@ -1,8 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Packaging scaffold only. It intentionally produces no release installer yet. -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="TyxNet" Language="1033" Version="0.1.0" Manufacturer="TyxNet" UpgradeCode="B9532192-E47F-4B06-9EC7-E4435810346A">
+  <Product Id="*" Name="TyxNet" Language="1033" Version="$(var.Version)" Manufacturer="TyxNet" UpgradeCode="B9532192-E47F-4B06-9EC7-E4435810346A">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />
+    <MajorUpgrade DowngradeErrorMessage="A newer TyxNet version is already installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="TyxNet">
+          <Component Id="CoreFiles" Guid="A5B95E69-70C5-4678-B786-0376C3A19FC1" Win64="yes">
+            <File Id="ClientExe" Source="$(var.SourceDir)/tyxnet-client.exe" KeyPath="yes" />
+            <File Id="ClientTrayExe" Source="$(var.SourceDir)/tyxnet-tray.exe" />
+            <File Id="ServerExe" Source="$(var.SourceDir)/tyxnet-server.exe" />
+            <File Id="ServerTrayExe" Source="$(var.SourceDir)/tyxnet-server-tray.exe" />
+            <File Id="CtlExe" Source="$(var.SourceDir)/tyxnetctl.exe" />
+            <File Id="WintunDll" Source="$(var.SourceDir)/wintun.dll" />
+            <File Id="WintunLicense" Source="$(var.SourceDir)/wintun-LICENSE.txt" />
+            <File Id="LauncherScript" Source="$(var.SourceDir)/Launch-TyxNet.ps1" />
+            <File Id="ServerConfig" Source="$(var.SourceDir)/server.yaml" />
+          </Component>
+        </Directory>
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="TyxNet">
+          <Component Id="ApplicationShortcuts" Guid="82DAB46C-D081-49CA-A384-54B5A60367EC">
+            <Shortcut Id="ClientShortcut" Name="TyxNet Client" Description="Start TyxNet Client" Target="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" Arguments="-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]Launch-TyxNet.ps1&quot; -Mode client" WorkingDirectory="INSTALLFOLDER" />
+            <Shortcut Id="ServerShortcut" Name="TyxNet Server" Description="Start TyxNet Server" Target="[SystemFolder]WindowsPowerShell\v1.0\powershell.exe" Arguments="-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File &quot;[INSTALLFOLDER]Launch-TyxNet.ps1&quot; -Mode server" WorkingDirectory="INSTALLFOLDER" />
+            <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+            <RegistryValue Root="HKLM" Key="Software\TyxNet" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="ProductFeature" Title="TyxNet" Level="1">
+      <ComponentRef Id="CoreFiles" />
+      <ComponentRef Id="ApplicationShortcuts" />
+    </Feature>
   </Product>
 </Wix>

@@ -15,9 +15,9 @@ its utun after receiving the authoritative virtual network, but packet routing i
 not yet connected to the UDP data plane.
 
 `tyxnet-tray` builds natively on macOS with Cocoa and places the same role-aware
-device/browser menu in the menu bar. A distributable build still requires a
-signed and notarized `.app` bundle; the command-line development build is not a
-finished installer.
+device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.1.0` creates
+an ad-hoc-signed universal DMG for local testing. Public distribution still
+requires a Developer ID signature and Apple notarization.
 
 `bash scripts/start-client-macos.sh` starts the privileged client and user menu
 bar process in the background. The web and tray **Run at startup** switches

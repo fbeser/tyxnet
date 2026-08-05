@@ -7,13 +7,21 @@ for arch in amd64 arm64; do
   build linux "$arch" tyxnet-client "tyxnet-client-linux-$arch"
   build linux "$arch" tyxnetctl "tyxnetctl-linux-$arch"
 done
-build windows amd64 tyxnet-client tyxnet-client-windows-amd64.exe
-build windows amd64 tyxnetctl tyxnetctl-windows-amd64.exe
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui" -o dist/tyxnet-tray-windows-amd64.exe ./cmd/tyxnet-tray
-GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui" -o dist/tyxnet-server-tray-windows-amd64.exe ./cmd/tyxnet-server-tray
+for arch in amd64 arm64; do
+  build windows "$arch" tyxnet-server "tyxnet-server-windows-$arch.exe"
+  build windows "$arch" tyxnet-client "tyxnet-client-windows-$arch.exe"
+  build windows "$arch" tyxnetctl "tyxnetctl-windows-$arch.exe"
+  GOOS=windows GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui" -o "dist/tyxnet-tray-windows-$arch.exe" ./cmd/tyxnet-tray
+  GOOS=windows GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui" -o "dist/tyxnet-server-tray-windows-$arch.exe" ./cmd/tyxnet-server-tray
+done
 for arch in amd64 arm64; do
   build darwin "$arch" tyxnet-server "tyxnet-server-darwin-$arch"
   build darwin "$arch" tyxnet-client "tyxnet-client-darwin-$arch"
   build darwin "$arch" tyxnetctl "tyxnetctl-darwin-$arch"
 done
-(cd dist && sha256sum * > checksums.txt)
+rm -f dist/checksums.txt
+if command -v sha256sum >/dev/null 2>&1; then
+  (cd dist && sha256sum * > checksums.txt)
+else
+  (cd dist && shasum -a 256 * > checksums.txt)
+fi
