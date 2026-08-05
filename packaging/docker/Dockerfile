@@ -1,9 +1,11 @@
-FROM golang:1.26.5-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tyxnet-server ./cmd/tyxnet-server
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /tyxnet-server ./cmd/tyxnet-server
 
 FROM alpine:3.21
 RUN apk add --no-cache iproute2 && mkdir -p /var/lib/tyxnet
