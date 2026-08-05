@@ -95,6 +95,15 @@ func TestClientTunnelValidation(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	c.TunnelEndpoint = "vpn.example.test:51830"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid tunnel endpoint: %v", err)
+	}
+	c.TunnelEndpoint = "missing-port"
+	if err := c.Validate(); err == nil {
+		t.Fatal("expected invalid tunnel endpoint")
+	}
+	c.TunnelEndpoint = ""
 	c.TunnelMTU = 575
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected invalid client tunnel MTU")

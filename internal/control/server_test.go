@@ -61,6 +61,48 @@ func TestAPIAuthorizationAndLogin(t *testing.T) {
 	}
 }
 
+func TestRememberedLoginRequiresHTTPSAndUsesSecureCookie(t *testing.T) {
+	ctx := context.Background()
+	st, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	passwordHash, _ := auth.HashPassword("a-secure-password")
+	if _, err = st.CreateAdmin(ctx, "admin", passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	h := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true).Handler()
+	body := `{"username":"admin","password":"a-secure-password","remember":true}`
+
+	insecureRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(body))
+	insecureResponse := httptest.NewRecorder()
+	h.ServeHTTP(insecureResponse, insecureRequest)
+	if insecureResponse.Code != http.StatusBadRequest || !bytes.Contains(insecureResponse.Body.Bytes(), []byte(`"code":"https_required"`)) {
+		t.Fatalf("insecure remembered login: %d %s", insecureResponse.Code, insecureResponse.Body.String())
+	}
+
+	secureRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewBufferString(body))
+	secureRequest.Header.Set("X-Forwarded-Proto", "https")
+	secureResponse := httptest.NewRecorder()
+	h.ServeHTTP(secureResponse, secureRequest)
+	if secureResponse.Code != http.StatusOK {
+		t.Fatalf("secure remembered login: %d %s", secureResponse.Code, secureResponse.Body.String())
+	}
+	cookies := secureResponse.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != sessionCookieName || !cookies[0].Secure || !cookies[0].HttpOnly || cookies[0].MaxAge <= 0 {
+		t.Fatalf("invalid remembered session cookie: %+v", cookies)
+	}
+
+	meRequest := httptest.NewRequest(http.MethodGet, "/api/v1/auth/me", nil)
+	meRequest.AddCookie(cookies[0])
+	meResponse := httptest.NewRecorder()
+	h.ServeHTTP(meResponse, meRequest)
+	if meResponse.Code != http.StatusOK || !bytes.Contains(meResponse.Body.Bytes(), []byte(`"Username":"admin"`)) {
+		t.Fatalf("cookie authentication: %d %s", meResponse.Code, meResponse.Body.String())
+	}
+}
+
 func TestDeviceConnectionPresence(t *testing.T) {
 	ctx := context.Background()
 	st, err := storage.Open(ctx, ":memory:")
@@ -467,11 +509,20 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("Change password")) {
 		t.Fatal("password update action is missing")
 	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("data.remember")) {
+		t.Fatal("remembered login control is missing")
+	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("Network flows")) || !bytes.Contains(w.Body.Bytes(), []byte("renderFlowMap")) {
 		t.Fatal("network flow panel is missing")
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("Array.isArray(raw.flows)")) {
 		t.Fatal("network flow response normalization is missing")
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("radiusY=105")) {
+		t.Fatal("network flow topology does not preserve label space")
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("function copyText")) || !bytes.Contains(w.Body.Bytes(), []byte("data-copy")) {
+		t.Fatal("clipboard fallback or virtual IP copy action is missing")
 	}
 }
 

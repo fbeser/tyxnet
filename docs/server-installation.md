@@ -11,8 +11,9 @@ Wintun adapter, Linux opens the configured TUN name, and macOS receives an
 available `utunN` name from the kernel. Repeated starts reuse the Windows adapter
 and idempotently replace Linux addressing; macOS utun devices are process-scoped
 and receive a kernel-selected number each time. Set `tunnel_enabled: false` only
-for control-plane-only development. Adapter creation does not yet provide
-end-to-end connectivity because the UDP data plane remains incomplete.
+for control-plane-only development. Adapters exchange virtual-IP traffic through
+the central encrypted UDP data plane when HTTPS control and UDP 51830 are
+reachable.
 
 For Docker on amd64 or arm64, download `docker-compose.yml` and run
 `docker compose up -d`. Compose pulls the published GHCR image instead of
@@ -21,6 +22,12 @@ first setup and UDP 51830 for the tunnel; configure TLS before untrusted-network
 exposure. The Compose restart policy starts TyxNet after host reboots. The web
 console therefore hides **Run at startup** in containers and does not invoke
 systemd there.
+
+For public HTTPS, point a domain at the server and use
+`docker-compose.https.yml`. Forward TCP 80/443 and UDP 51830 to the host. Caddy
+terminates TLS and automatically renews the certificate; TyxNet TCP 8443 remains
+private to the Compose network. Clients require the HTTPS URL before the server
+will issue encrypted UDP data-plane credentials.
 
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open

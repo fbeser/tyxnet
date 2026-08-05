@@ -20,9 +20,9 @@ NAT or CGNAT. Devices initiate outbound connections to a central server, receive
 private IPv4 identities, and appear in a role-aware web console.
 
 > [!IMPORTANT]
-> The management and enrollment plane works, but tunneled packet forwarding is
-> not yet connected end-to-end. TyxNet `v0.1.x` is an experimental development
-> release, not a production-ready VPN replacement.
+> Encrypted central UDP forwarding is implemented for experimental virtual-IP
+> traffic. TyxNet is still an experimental development release, not a
+> production-ready or independently audited VPN replacement.
 
 > [!WARNING]
 > The protocol has not undergone an independent security audit. Do not expose a
@@ -105,6 +105,31 @@ ghcr.io/fbeser/tyxnet:latest
 
 Architectures: `linux/amd64` and `linux/arm64`.
 
+### Public HTTPS with Docker
+
+A public deployment needs a domain whose A/AAAA record points to the server.
+Forward TCP `80` and `443`, plus UDP `51830`, from the modem to the Raspberry Pi.
+Then run the HTTPS Compose stack:
+
+```bash
+mkdir -p tyxnet && cd tyxnet
+curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.https.yml
+printf 'TYXNET_DOMAIN=vpn.example.com\n' > .env
+sudo docker compose -f docker-compose.https.yml pull
+sudo docker compose -f docker-compose.https.yml up -d
+```
+
+Legacy Compose uses the same commands with `docker-compose`. Caddy obtains and
+renews the public certificate automatically. Open `https://vpn.example.com` and
+configure every client with that HTTPS URL. Do not expose the server's internal
+TCP `8443` listener when using this stack.
+
+Already enrolled clients keep their device identity; only change `server:` to
+the new HTTPS URL and restart TyxNet. Windows stores this file at
+`C:\ProgramData\TyxNet\client.yaml`; macOS stores it under
+`~/Library/Application Support/TyxNet/client.yaml`. No new enrollment token is
+required.
+
 ### macOS
 
 1. Open the [latest release](https://github.com/fbeser/tyxnet/releases/latest).
@@ -143,8 +168,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.2.1/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.2.1/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.0/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.0/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 
@@ -172,19 +197,19 @@ sudo journalctl -u tyxnet-server -f
 | Users, roles, sessions, enrollment tokens, devices, and audit events | Working |
 | Ed25519 enrollment and challenge-authenticated control connection | Working |
 | Reconnect, heartbeat, device presence, and role-scoped views | Working |
-| Network-flow topology and 60-second traffic dashboard | UI/API ready; awaiting data plane |
+| Network-flow topology and 60-second traffic dashboard | Working |
 | Linux TUN, Windows Wintun, and macOS utun adapter creation | Experimental |
 | Windows tray and macOS menu-bar companions | Experimental |
 | Native Linux systemd installation | Working |
 | Multiarch Docker image and Compose deployment | Working |
-| UDP packet data plane and virtual-IP traffic | Not complete |
+| Encrypted UDP packet data plane and virtual-IP traffic | Experimental |
 | Authenticated remote reconnect, restart, shutdown, and result reporting | Working |
 | Signed/notarized desktop distribution | Not complete |
 | Mobile clients, P2P, STUN, and hole punching | Planned |
 
-Adapter creation alone does not make traffic such as `ssh user@10.90.0.4`
-functional. The encrypted UDP data plane remains the main missing networking
-component.
+With HTTPS control and UDP `51830` reachable, traffic such as
+`ping 10.90.0.1` or `ssh user@10.90.0.4` crosses the central encrypted data
+plane. Host firewalls and the destination service must still allow that traffic.
 
 ## Features
 
@@ -192,7 +217,7 @@ component.
 - Browser-based server management and client enrollment/status consoles
 - Users, RBAC roles, enrollment tokens, sessions, commands, and audit records
 - Ed25519 device identity and challenge authentication
-- X25519, HKDF-SHA256, ChaCha20-Poly1305, and replay-window primitives
+- HKDF-SHA256, ChaCha20-Poly1305, directional keys, and replay protection
 - Argon2id passwords and one-way hashes for random tokens
 - Virtual source-IP validation and central routing policy
 - Live network topology, per-flow Mbps, packet totals, and 60-second throughput charts
@@ -211,9 +236,9 @@ flowchart LR
   MC[macOS client] -->|TLS control| S
   UI[Web console / tyxnetctl] -->|HTTPS API| S
   S --> DB[(SQLite)]
-  LC -. planned encrypted UDP packets .-> S
-  WC -. planned encrypted UDP packets .-> S
-  MC -. planned encrypted UDP packets .-> S
+  LC -->|Encrypted UDP packets| S
+  WC -->|Encrypted UDP packets| S
+  MC -->|Encrypted UDP packets| S
 ```
 
 TyxNet uses a central star topology. Clients connect outbound through NAT or
@@ -268,7 +293,7 @@ release, make it executable, then enroll and install it:
 ```bash
 chmod +x tyxnet-client-linux-arm64
 sudo ./tyxnet-client-linux-arm64 install \
-  --server https://vpn.example.com:8443 \
+  --server https://vpn.example.com \
   --token TYX-EXAMPLE \
   --name workshop-pc
 ```
@@ -300,10 +325,10 @@ The server dashboard provides setup, login, overview counters, device rename and
 revoke, persistent virtual-IP assignment, command actions, user and role
 management, administrator password resets, token management, command history,
 server settings, network-flow telemetry, and audit logs. The flow panel shows
-device-to-device direction, current Mbps, packet totals, and a 60-second chart;
-it remains at zero until the encrypted UDP packet data plane is connected.
-Resetting a password signs out every existing session for that user; the new
-password must contain at least 12 characters.
+device-to-device direction, current Mbps, packet totals, and a 60-second chart
+from successfully routed virtual-IP packets. Resetting a password signs out
+every existing session for that user; the new password must contain at least 12
+characters. **Remember me** creates a 30-day session only over HTTPS.
 
 | Role | Devices visible to clients | Client controls |
 |---|---|---|
@@ -326,10 +351,10 @@ commands. No server-provided text is passed to a shell.
 ## CLI
 
 ```bash
-tyxnetctl --server https://vpn.example.com:8443 login \
+tyxnetctl --server https://vpn.example.com login \
   --username admin --password '...'
 
-export TYXNET_SERVER=https://vpn.example.com:8443
+export TYXNET_SERVER=https://vpn.example.com
 export TYXNET_ACCESS_TOKEN=TYX-...
 
 tyxnetctl devices list
@@ -360,14 +385,18 @@ Private keys and tokens are never written into server configuration YAML.
 
 | Port | Protocol | Purpose |
 |---:|---|---|
-| 8443 | TCP | Dashboard, management, enrollment, and control APIs |
-| 51830 | UDP | Reserved for the experimental packet tunnel |
+| 443 | TCP/UDP | Public HTTPS through Caddy (HTTPS Compose stack) |
+| 8443 | TCP | Direct/LAN dashboard, enrollment, and control APIs |
+| 51830 | UDP | Encrypted virtual-IP packet tunnel |
 | 9070 | TCP | Local client enrollment and status UI |
 
 Allow only the required ports from intended networks. Never expose TCP 9070 to
 the public internet. The default Docker Compose file publishes TCP 8443 to the
 LAN for first setup and should be used only on a trusted network until TLS is
 configured.
+
+Clients initiate UDP keepalives, so no client-side port forwarding is needed.
+The server-side modem/firewall must forward UDP `51830` to the TyxNet server.
 
 ## Operations
 

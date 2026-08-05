@@ -1,0 +1,34 @@
+services:
+  tyxnet-server:
+    image: ghcr.io/fbeser/tyxnet:latest
+    restart: unless-stopped
+    command: ["run", "--config", "/etc/tyxnet/server.https.yaml"]
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    expose:
+      - "8443"
+    ports:
+      - "51830:51830/udp"
+    volumes:
+      - tyxnet-data:/var/lib/tyxnet
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - tyxnet-server
+    command: ["reverse-proxy", "--from", "https://${TYXNET_DOMAIN:?set TYXNET_DOMAIN in .env}", "--to", "http://tyxnet-server:8443"]
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  tyxnet-data:
+  caddy-data:
+  caddy-config:

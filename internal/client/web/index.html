@@ -14,7 +14,7 @@
       <span class="eyebrow">FIRST-TIME SETUP</span><h2>Connect this device</h2>
       <p>Enter the server address and an enrollment token created in the server console.</p>
       <form id="setup-form">
-        <label>Server URL<input id="server" type="url" placeholder="http://192.168.1.20:8443" required></label>
+        <label>Server URL<input id="server" type="url" placeholder="https://vpn.example.com" required></label>
         <label>Device name<input id="name" placeholder="office-pc" required maxlength="80"></label>
         <label>Enrollment token<input id="token" type="password" placeholder="TYX-..." required autocomplete="off"></label>
         <button type="submit">Connect device</button>
@@ -29,7 +29,7 @@
       <section id="management-login" class="card">
         <span class="eyebrow">NETWORK MANAGEMENT</span><h2>Sign in to view devices</h2>
         <p>Your server role determines which devices and controls are available.</p>
-        <form id="login-form"><label>Username<input id="username" required autocomplete="username"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><button>Sign in</button></form>
+        <form id="login-form"><label>Username<input id="username" required autocomplete="username"></label><label>Password<input id="password" type="password" required autocomplete="current-password"></label><label><input id="remember" type="checkbox"> Remember me for 30 days</label><button>Sign in</button></form>
         <p id="login-error" class="error" role="alert"></p>
       </section>
       <section id="network-devices" class="card" hidden>

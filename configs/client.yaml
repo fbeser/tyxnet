@@ -1,4 +1,5 @@
-server: https://vpn.example.com:8443
+server: https://vpn.example.com
+tunnel_endpoint: "" # Optional host:port override when UDP 51830 is mapped differently.
 name: workshop-pc
 state_dir: ./client-state
 local_address: 0.0.0.0:9070

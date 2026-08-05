@@ -29,6 +29,7 @@ import (
 	"github.com/fbeser/tyxnet/internal/buildinfo"
 	"github.com/fbeser/tyxnet/internal/commands"
 	"github.com/fbeser/tyxnet/internal/config"
+	"github.com/fbeser/tyxnet/internal/dataplane"
 	"github.com/fbeser/tyxnet/internal/platform"
 	"github.com/fbeser/tyxnet/internal/storage"
 	"github.com/fbeser/tyxnet/internal/tunnel"
@@ -47,6 +48,7 @@ type State struct {
 	AdapterName    string    `json:"adapter_name"`
 	AdapterAddress string    `json:"adapter_address"`
 	AdapterReady   bool      `json:"adapter_ready"`
+	DataPlaneReady bool      `json:"data_plane_ready"`
 	LastConnected  time.Time `json:"last_connected"`
 	LastError      string    `json:"last_error"`
 	Started        time.Time `json:"started"`
@@ -72,6 +74,8 @@ type Client struct {
 	adapterMu       sync.Mutex
 	adapter         tunnel.Device
 	adapterAddress  string
+	dataPlaneMu     sync.Mutex
+	dataPlane       *dataplane.Client
 	ensureTunnel    ensureTunnelFunc
 	startupSpec     application.StartupSpec
 	trayToken       string
@@ -242,13 +246,19 @@ func (c *Client) connect(ctx context.Context) error {
 				continue
 			}
 			var update struct {
-				VirtualIP           string `json:"virtual_ip"`
-				VirtualNetwork      string `json:"virtual_network"`
-				PingIntervalSeconds int    `json:"ping_interval_seconds"`
+				VirtualIP           string               `json:"virtual_ip"`
+				VirtualNetwork      string               `json:"virtual_network"`
+				PingIntervalSeconds int                  `json:"ping_interval_seconds"`
+				DataPlane           *dataplane.Bootstrap `json:"data_plane"`
 			}
 			if json.Unmarshal(data, &update) == nil {
 				if err := c.applyServerState(ctx, update.VirtualIP, update.VirtualNetwork, update.PingIntervalSeconds); err != nil {
 					return err
+				}
+				if update.DataPlane != nil {
+					if err := c.configureDataPlane(*update.DataPlane); err != nil {
+						return fmt.Errorf("configure data plane: %w", err)
+					}
 				}
 			}
 		}
@@ -373,10 +383,17 @@ func (c *Client) ensureClientAdapter(ctx context.Context, virtualIP, virtualNetw
 	}
 	address := fmt.Sprintf("%s/%d", ip.String(), prefix)
 	c.adapterMu.Lock()
-	defer c.adapterMu.Unlock()
 	if c.adapter != nil && c.adapterAddress == address {
+		c.adapterMu.Unlock()
 		return nil
 	}
+	hasAdapter := c.adapter != nil
+	c.adapterMu.Unlock()
+	if hasAdapter {
+		c.closeDataPlane()
+	}
+	c.adapterMu.Lock()
+	defer c.adapterMu.Unlock()
 	if c.adapter != nil {
 		_ = c.adapter.Close()
 		c.adapter = nil
@@ -401,6 +418,7 @@ func (c *Client) ensureClientAdapter(ctx context.Context, virtualIP, virtualNetw
 }
 
 func (c *Client) closeAdapter() {
+	c.closeDataPlane()
 	c.adapterMu.Lock()
 	defer c.adapterMu.Unlock()
 	if c.adapter != nil {
@@ -410,6 +428,47 @@ func (c *Client) closeAdapter() {
 	c.State.mu.Lock()
 	c.State.AdapterReady = false
 	c.State.mu.Unlock()
+}
+
+func (c *Client) closeDataPlane() {
+	c.dataPlaneMu.Lock()
+	if c.dataPlane != nil {
+		_ = c.dataPlane.Close()
+		c.dataPlane = nil
+	}
+	c.dataPlaneMu.Unlock()
+	c.State.mu.Lock()
+	c.State.DataPlaneReady = false
+	c.State.mu.Unlock()
+}
+
+func (c *Client) configureDataPlane(bootstrap dataplane.Bootstrap) error {
+	c.adapterMu.Lock()
+	adapter := c.adapter
+	c.adapterMu.Unlock()
+	if adapter == nil {
+		return errors.New("client adapter is unavailable")
+	}
+	c.State.mu.RLock()
+	assignedIP := net.ParseIP(c.State.VirtualIP)
+	deviceID := c.State.DeviceID
+	c.State.mu.RUnlock()
+	c.dataPlaneMu.Lock()
+	defer c.dataPlaneMu.Unlock()
+	if c.dataPlane == nil {
+		dataPlane, err := dataplane.NewClient(adapter, assignedIP, deviceID, c.Config.TunnelMTU)
+		if err != nil {
+			return err
+		}
+		c.dataPlane = dataPlane
+	}
+	if err := c.dataPlane.Configure(c.Config.ServerURL, c.Config.TunnelEndpoint, bootstrap); err != nil {
+		return err
+	}
+	c.State.mu.Lock()
+	c.State.DataPlaneReady = true
+	c.State.mu.Unlock()
+	return nil
 }
 
 func clientAdapterName(serverURL string) string {
@@ -537,6 +596,7 @@ func (c *Client) managementLogin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Remember bool   `json:"remember"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {

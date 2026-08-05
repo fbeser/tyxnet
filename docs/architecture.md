@@ -2,7 +2,7 @@
 
 TyxNet v1 is a central star. Management clients use HTTPS; enrolled devices use
 a logically separate challenge-authenticated persistent control endpoint. The
-planned data plane transports only IPv4 packets read from TUN over UDP.
+data plane transports only IPv4 packets read from TUN over encrypted UDP.
 
 ```mermaid
 sequenceDiagram
@@ -18,8 +18,9 @@ sequenceDiagram
   S-->>C: authenticated SSE control stream
 ```
 
-The UDP data-plane integration is not complete. `routing.Router` already enforces
-that an IPv4 source equals the peer's assigned address and drops unknown targets.
+The UDP data plane transports IPv4 packets between native adapters through the
+central server. `routing.Router` enforces that an IPv4 source equals the peer's
+assigned address and drops unknown targets.
 Successfully routed packets feed a payload-blind observer that retains source
 and destination virtual IPs, byte counts, and packet counts in one-second memory
 buckets for 60 seconds. The management API derives five-second Mbps rates and a
@@ -28,18 +29,19 @@ buckets for 60 seconds. The management API derives five-second Mbps rates and a
 use Linux `/dev/net/tun`, Windows Wintun, or kernel-assigned macOS `utunN`
 devices. A client derives a stable adapter identity from its server URL, keeping
 it separate from the server adapter and from clients attached to other servers.
-These adapters are configured at startup but are not yet connected to the UDP
-data plane. Future Android `VpnService` and macOS/iOS Network Extension clients can implement
-the same TUN and protocol boundaries without importing server internals. The
+These adapters are connected to short-lived encrypted UDP sessions established
+through the authenticated HTTPS control stream. Future Android `VpnService` and
+macOS/iOS Network Extension clients can implement the same TUN and protocol
+boundaries without importing server internals. The
 current Darwin command-line client uses a development utun integration; a
 production Network Extension remains incomplete.
 
 The server management console is a no-build HTML/CSS/JavaScript application
 embedded in the Go binary. It includes a device topology, directional flow map,
 and SVG throughput chart backed by the same bearer-authenticated `/api/v1`
-surface as `tyxnetctl`. Until the UDP data plane is connected, the panel reports
-its inactive state rather than displaying synthetic traffic. First-user web
-setup is available on the LAN by default and can be restricted to loopback with
+surface as `tyxnetctl`. The panel reports live traffic only after the UDP
+listener is ready. First-user web setup is available on the LAN by default and
+can be restricted to loopback with
 `--local-web`.
 
 The same authenticated SSE control connection delivers short-lived allowlisted

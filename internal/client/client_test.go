@@ -281,11 +281,32 @@ func TestWebSetupEnrollsAndPersistsClient(t *testing.T) {
 	}
 }
 
+func TestEmbeddedClientAssetsIncludeVirtualIPCopy(t *testing.T) {
+	cfg := config.DefaultClient()
+	cfg.StateDir = t.TempDir()
+	h := New(cfg).LocalHandler(filepath.Join(t.TempDir(), "client.yaml"))
+	r := httptest.NewRequest(http.MethodGet, "/ui/app.js", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("client app asset: %d", w.Code)
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("function copyText")) || !bytes.Contains(w.Body.Bytes(), []byte("data-copy")) {
+		t.Fatal("client virtual IP copy support is missing")
+	}
+}
+
 func TestManagementProxyAndLoopbackTrayAPI(t *testing.T) {
+	var rememberedLogin bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/auth/login":
+			var login struct {
+				Remember bool `json:"remember"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&login)
+			rememberedLogin = login.Remember
 			_, _ = w.Write([]byte(`{"access_token":"session-test","expires_in":900,"user":{"ID":"usr_test","Username":"admin","Role":"admin"}}`))
 		case "/api/v1/auth/me":
 			if r.Header.Get("Authorization") != "Bearer session-test" {
@@ -321,11 +342,14 @@ func TestManagementProxyAndLoopbackTrayAPI(t *testing.T) {
 	client.ConfigureApplication(application.StartupSpec{}, "test-tray-token", func() { stopped <- struct{}{} })
 	h := client.LocalHandler(filepath.Join(t.TempDir(), "client.yaml"))
 
-	r := httptest.NewRequest(http.MethodPost, "/api/management/login", bytes.NewBufferString(`{"username":"operator","password":"secret"}`))
+	r := httptest.NewRequest(http.MethodPost, "/api/management/login", bytes.NewBufferString(`{"username":"operator","password":"secret","remember":true}`))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte("session-test")) {
 		t.Fatalf("management login: %d %s", w.Code, w.Body.String())
+	}
+	if !rememberedLogin {
+		t.Fatal("management login did not forward remember preference")
 	}
 
 	r = httptest.NewRequest(http.MethodGet, "/api/management/devices", nil)

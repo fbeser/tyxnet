@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,15 +33,16 @@ type Server struct {
 }
 
 type Client struct {
-	ServerURL     string        `yaml:"server"`
-	Name          string        `yaml:"name"`
-	StateDir      string        `yaml:"state_dir"`
-	LocalAddress  string        `yaml:"local_address"`
-	AllowRemoteUI bool          `yaml:"allow_remote_ui"`
-	Keepalive     time.Duration `yaml:"keepalive"`
-	TunnelEnabled bool          `yaml:"tunnel_enabled"`
-	TunnelName    string        `yaml:"tunnel_name"`
-	TunnelMTU     int           `yaml:"tunnel_mtu"`
+	ServerURL      string        `yaml:"server"`
+	TunnelEndpoint string        `yaml:"tunnel_endpoint"`
+	Name           string        `yaml:"name"`
+	StateDir       string        `yaml:"state_dir"`
+	LocalAddress   string        `yaml:"local_address"`
+	AllowRemoteUI  bool          `yaml:"allow_remote_ui"`
+	Keepalive      time.Duration `yaml:"keepalive"`
+	TunnelEnabled  bool          `yaml:"tunnel_enabled"`
+	TunnelName     string        `yaml:"tunnel_name"`
+	TunnelMTU      int           `yaml:"tunnel_mtu"`
 }
 
 func DefaultServer() Server {
@@ -174,6 +176,16 @@ func (c Client) Validate() error {
 		return errors.New("keepalive must be at least 5s")
 	}
 	if c.TunnelEnabled {
+		if c.TunnelEndpoint != "" {
+			host, port, splitErr := net.SplitHostPort(c.TunnelEndpoint)
+			if splitErr != nil || strings.TrimSpace(host) == "" {
+				return errors.New("tunnel_endpoint must use host:port format")
+			}
+			portNumber, parseErr := strconv.Atoi(port)
+			if parseErr != nil || portNumber < 1 || portNumber > 65535 {
+				return errors.New("tunnel_endpoint port must be between 1 and 65535")
+			}
+		}
 		if len(c.TunnelName) > 15 {
 			return errors.New("tunnel_name must be at most 15 characters")
 		}

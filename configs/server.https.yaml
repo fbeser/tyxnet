@@ -1,0 +1,15 @@
+listen_address: 0.0.0.0
+api_port: 8443
+tunnel_port: 51830
+tunnel_enabled: true
+tunnel_name: TyxNet
+tunnel_address: 10.90.0.1
+tunnel_mtu: 1280
+network: 10.90.0.0/24
+database: /var/lib/tyxnet/tyxnet.db
+tls_cert: ""
+tls_key: ""
+allow_insecure_http: true # Caddy terminates public TLS on the private Compose network.
+allow_remote_setup: true
+session_ttl: 15m
+ping_interval: 25s

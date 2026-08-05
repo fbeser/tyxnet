@@ -8,10 +8,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 )
+
+const DataKeySize = chacha20poly1305.KeySize
 
 type Identity struct {
 	Public  ed25519.PublicKey
@@ -36,6 +39,23 @@ func DeriveKey(private *ecdh.PrivateKey, peer []byte, transcript []byte) ([]byte
 	r := hkdf.New(sha256.New, secret, transcriptHash[:], []byte("tyxnet-v1-session"))
 	key := make([]byte, chacha20poly1305.KeySize)
 	if _, err := r.Read(key); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+func DeriveDirectionalKey(secret []byte, session uint64, direction string) ([]byte, error) {
+	if len(secret) != DataKeySize || session == 0 {
+		return nil, errors.New("invalid data-plane secret")
+	}
+	if direction != "client-to-server" && direction != "server-to-client" {
+		return nil, errors.New("invalid data-plane direction")
+	}
+	salt := make([]byte, 8)
+	binary.BigEndian.PutUint64(salt, session)
+	reader := hkdf.New(sha256.New, secret, salt, []byte("tyxnet-data-v1/"+direction))
+	key := make([]byte, DataKeySize)
+	if _, err := io.ReadFull(reader, key); err != nil {
 		return nil, err
 	}
 	return key, nil

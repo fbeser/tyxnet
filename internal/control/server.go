@@ -23,6 +23,7 @@ import (
 
 	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/auth"
+	"github.com/fbeser/tyxnet/internal/dataplane"
 	"github.com/fbeser/tyxnet/internal/routing"
 	"github.com/fbeser/tyxnet/internal/storage"
 	"github.com/fbeser/tyxnet/pkg/protocol"
@@ -51,6 +52,7 @@ type Server struct {
 	startupEnabled   func(application.StartupSpec) (bool, error)
 	setStartup       func(application.StartupSpec, bool) error
 	traffic          *routing.TrafficMonitor
+	dataPlane        *dataplane.Server
 	commandMu        sync.Mutex
 	commandSignals   map[string]chan struct{}
 }
@@ -59,6 +61,8 @@ func (s *Server) SetAdapter(name, address string) {
 	s.adapterName = name
 	s.adapterAddress = address
 }
+
+func (s *Server) SetDataPlane(dataPlane *dataplane.Server) { s.dataPlane = dataPlane }
 
 func (s *Server) ConfigureApplication(spec application.StartupSpec, trayToken string, shutdown func()) {
 	s.startupSpec = spec
@@ -81,6 +85,11 @@ type ipLimiter struct {
 type ctxKey string
 
 const userKey ctxKey = "user"
+
+const (
+	sessionCookieName  = "tyxnet_session"
+	rememberSessionTTL = 30 * 24 * time.Hour
+)
 
 func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger, localBootstrap bool) *Server {
 	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupAvailable: application.StartupAvailable, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, traffic: routing.NewTrafficMonitor(), commandSignals: map[string]chan struct{}{}}
@@ -349,11 +358,24 @@ func bearer(r *http.Request) string {
 	}
 	return ""
 }
+func authToken(r *http.Request) string {
+	if token := bearer(r); token != "" {
+		return token
+	}
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return ""
+	}
+	return cookie.Value
+}
+func secureRequest(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
 func (s *Server) authorized(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		u, err := s.store.SessionUser(r.Context(), bearer(r))
+		u, err := s.store.SessionUser(r.Context(), authToken(r))
 		if err != nil {
-			problem(w, 401, "unauthorized", "valid bearer token required")
+			problem(w, 401, "unauthorized", "valid session required")
 			return
 		}
 		r = r.WithContext(contextWithUser(r.Context(), u))
@@ -365,6 +387,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Remember bool   `json:"remember"`
 	}
 	if decode(r, &in) != nil {
 		problem(w, 400, "invalid_request", "invalid JSON")
@@ -377,13 +400,24 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		problem(w, 401, "invalid_credentials", "invalid credentials")
 		return
 	}
-	token, err := s.store.CreateSession(r.Context(), u.ID, s.ttl)
+	ttl := s.ttl
+	if in.Remember {
+		if !secureRequest(r) {
+			problem(w, 400, "https_required", "remember me requires HTTPS")
+			return
+		}
+		ttl = rememberSessionTTL
+	}
+	token, err := s.store.CreateSession(r.Context(), u.ID, ttl)
 	if err != nil {
 		problem(w, 500, "internal", "session creation failed")
 		return
 	}
+	if in.Remember {
+		http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: token, Path: "/", MaxAge: int(ttl.Seconds()), Expires: time.Now().Add(ttl), HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	}
 	s.store.Audit(r.Context(), u.ID, "login", "", r.RemoteAddr, "")
-	write(w, 200, map[string]any{"access_token": token, "expires_in": int(s.ttl.Seconds()), "user": u})
+	write(w, 200, map[string]any{"access_token": token, "expires_in": int(ttl.Seconds()), "user": u})
 }
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -454,9 +488,19 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "internal", "device state unavailable")
 		return
 	}
+	var dataBootstrap *dataplane.Bootstrap
+	if s.dataPlane != nil && secureRequest(r) {
+		bootstrap, bootstrapErr := s.dataPlane.Register(device.ID, net.ParseIP(device.VirtualIP))
+		if bootstrapErr != nil {
+			problem(w, 500, "data_plane_failed", "data-plane session unavailable")
+			return
+		}
+		dataBootstrap = &bootstrap
+		defer s.dataPlane.Remove(device.ID, bootstrap.SessionID)
+	}
 	s.deviceConnected(in.DeviceID)
 	defer s.deviceDisconnected(in.DeviceID)
-	connected, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": device.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds())})
+	connected, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": device.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds()), "data_plane": dataBootstrap})
 	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connected); err != nil {
 		return
 	}
@@ -469,13 +513,24 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 	defer pingTimer.Stop()
 	defer commandTicker.Stop()
 	commandSignal := s.commandSignal(in.DeviceID)
+	var dataExpiry <-chan time.Time
+	if dataBootstrap != nil {
+		expiryTimer := time.NewTimer(time.Until(dataBootstrap.ExpiresAt))
+		defer expiryTimer.Stop()
+		dataExpiry = expiryTimer.C
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-dataExpiry:
+			return
 		case <-pingTimer.C:
 			current, err := s.store.Device(r.Context(), in.DeviceID)
 			if err != nil {
+				return
+			}
+			if current.VirtualIP != device.VirtualIP {
 				return
 			}
 			payload, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": current.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds())})
@@ -549,7 +604,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/")
 	switch {
 	case r.Method == "POST" && path == "auth/logout":
-		_ = s.store.DeleteSession(r.Context(), bearer(r))
+		_ = s.store.DeleteSession(r.Context(), authToken(r))
+		http.SetCookie(w, &http.Cookie{Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: secureRequest(r), SameSite: http.SameSiteStrictMode})
 		w.WriteHeader(204)
 	case r.Method == "GET" && path == "auth/me":
 		write(w, 200, u)

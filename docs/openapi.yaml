@@ -1,13 +1,14 @@
 openapi: 3.1.0
 info:
   title: TyxNet API
-  version: 0.2.1
+  version: 0.3.0
   description: Experimental management, enrollment and device-control API.
 servers:
-  - url: https://vpn.example.com:8443
+  - url: https://vpn.example.com
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
+    sessionCookie: {type: apiKey, in: cookie, name: tyxnet_session, description: Optional 30-day HTTPS-only browser session selected at login.}
   schemas:
     Error:
       type: object
@@ -15,7 +16,16 @@ components:
     Login:
       type: object
       required: [username, password]
-      properties: {username: {type: string}, password: {type: string, format: password}}
+      properties: {username: {type: string}, password: {type: string, format: password}, remember: {type: boolean, default: false, description: Requests a 30-day Secure HttpOnly cookie and requires HTTPS.}}
+    DataPlaneBootstrap:
+      type: object
+      required: [protocol_version, session_id, secret, port, expires_at]
+      properties:
+        protocol_version: {type: integer, const: 1}
+        session_id: {type: string}
+        secret: {type: string, description: Base64url 256-bit secret delivered only over authenticated HTTPS.}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        expires_at: {type: string, format: date-time}
     PasswordUpdate:
       type: object
       required: [password]
@@ -78,7 +88,7 @@ paths:
   /api/v1/auth/login:
     post:
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Login'}}}}
-      responses: {'200': {description: Bearer session}, '401': {description: Invalid credentials}}
+      responses: {'200': {description: Bearer session and optional secure persistent cookie}, '400': {description: Remembered login requested without HTTPS}, '401': {description: Invalid credentials}}
   /api/v1/auth/logout:
     post: {security: [{bearerAuth: []}], responses: {'204': {description: Logged out}}}
   /api/v1/auth/me:
@@ -95,7 +105,7 @@ paths:
   /control/v1/challenge:
     post: {description: Issues a one-use 30-second device challenge, responses: {'200': {description: Challenge}}}
   /control/v1/connect:
-    post: {description: Verifies Ed25519 proof and opens the versioned SSE control stream carrying authoritative virtual-IP and ping-interval state plus allowlisted command events, responses: {'200': {description: Event stream}, '403': {description: Invalid proof}}}
+    post: {description: Verifies Ed25519 proof and opens the versioned SSE control stream carrying authoritative virtual-IP and ping-interval state, an HTTPS-only short-lived encrypted UDP data-plane bootstrap, and allowlisted command events, responses: {'200': {description: Event stream}, '403': {description: Invalid proof}}}
   /control/v1/commands/{id}/result:
     post:
       description: Consumes a fresh device challenge and records an Ed25519-authenticated command transition. The signature binds the challenge, device, command, status, result, and error.

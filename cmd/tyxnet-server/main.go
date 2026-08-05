@@ -22,6 +22,7 @@ import (
 	"github.com/fbeser/tyxnet/internal/buildinfo"
 	"github.com/fbeser/tyxnet/internal/config"
 	"github.com/fbeser/tyxnet/internal/control"
+	"github.com/fbeser/tyxnet/internal/dataplane"
 	"github.com/fbeser/tyxnet/internal/installer"
 	"github.com/fbeser/tyxnet/internal/platform"
 	"github.com/fbeser/tyxnet/internal/storage"
@@ -135,6 +136,12 @@ func runServer(args []string) error {
 		}
 		defer func() { _ = device.Close() }()
 		controlServer.SetAdapter(device.Name(), addressCIDR)
+		dataServer, dataErr := dataplane.Listen(fmt.Sprintf("%s:%d", c.ListenAddress, c.TunnelPort), device, net.ParseIP(c.TunnelAddress), c.TunnelMTU, controlServer.TrafficMonitor())
+		if dataErr != nil {
+			return fmt.Errorf("start UDP data plane: %w", dataErr)
+		}
+		defer func() { _ = dataServer.Close() }()
+		controlServer.SetDataPlane(dataServer)
 		log.Info("virtual adapter ready", "name", device.Name(), "address", addressCIDR, "mtu", c.TunnelMTU)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

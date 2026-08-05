@@ -19,8 +19,10 @@ whose `TyxC-xxxxxxxx` name and GUID are derived from the server URL. It therefor
 does not reuse the server's `TyxNet` adapter, and a different server URL receives
 a different adapter. The notification-area menu opens the web console, shows the
 role-permitted cached device list, and exposes admin/operator controls.
+The Wintun adapter exchanges virtual IPv4 packets through the authenticated,
+encrypted UDP data plane after HTTPS control authentication.
 **Run at startup** installs an elevated logon task without recurring UAC prompts,
 and **Quit TyxNet** stops the client as well as the tray. On macOS,
-`sh scripts/package-windows.sh 0.2.1` creates an unsigned x64 MSI using `wixl`.
+`sh scripts/package-windows.sh 0.3.0` creates an unsigned x64 MSI using `wixl`.
 Authenticode signing, native Windows Service integration, and installer-managed
 firewall rules remain planned.
