@@ -3,7 +3,7 @@
 Build the universal Intel/Apple Silicon DMG on macOS with:
 
 ```text
-sh scripts/package-macos.sh 0.3.2
+sh scripts/package-macos.sh 0.3.3
 ```
 
 The DMG contains `TyxNet Client.app` and `TyxNet Server.app`. Each app requests

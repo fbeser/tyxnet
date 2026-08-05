@@ -16,39 +16,16 @@ services:
       - "${TYXNET_TUNNEL_PORT:-51830}:51830/udp"
     volumes:
       - tyxnet-data:/var/lib/tyxnet
+    networks:
+      tyxnet:
+        aliases:
+          - tyxnet-server
 
   caddy:
-    image: caddy:2-alpine
+    image: "ghcr.io/fbeser/tyxnet:${TYXNET_VERSION:-latest}"
     restart: unless-stopped
-    command:
-      - /bin/sh
-      - -ec
-      - |
-        if [ -n "$${TYXNET_DOMAIN}" ]; then
-          printf '%s\n' \
-            "https://$${TYXNET_DOMAIN} {" \
-            "    reverse_proxy tyxnet-server:8443" \
-            "}" > /tmp/Caddyfile
-        elif [ -n "$${TYXNET_PUBLIC_IP}" ]; then
-          printf '%s\n' \
-            "{" \
-            "    default_sni $${TYXNET_PUBLIC_IP}" \
-            "}" \
-            "" \
-            "https://$${TYXNET_PUBLIC_IP} {" \
-            "    tls {" \
-            "        issuer acme {" \
-            "            dir https://acme-v02.api.letsencrypt.org/directory" \
-            "            profile shortlived" \
-            "        }" \
-            "    }" \
-            "    reverse_proxy tyxnet-server:8443" \
-            "}" > /tmp/Caddyfile
-        else
-          echo "Set TYXNET_DOMAIN or TYXNET_PUBLIC_IP in .env" >&2
-          exit 1
-        fi
-        exec caddy run --config /tmp/Caddyfile --adapter caddyfile
+    entrypoint: ["/usr/local/bin/tyxnet-caddy-entrypoint"]
+    command: []
     environment:
       TYXNET_DOMAIN: "${TYXNET_DOMAIN:-}"
       TYXNET_PUBLIC_IP: "${TYXNET_PUBLIC_IP:-}"
@@ -59,8 +36,17 @@ services:
     volumes:
       - caddy-data:/data
       - caddy-config:/config
+    networks:
+      tyxnet: {}
 
 volumes:
   tyxnet-data:
+    name: "${TYXNET_DATA_VOLUME:-tyxnet_tyxnet-data}"
   caddy-data:
+    name: "${TYXNET_CADDY_DATA_VOLUME:-tyxnet_caddy-data}"
   caddy-config:
+    name: "${TYXNET_CADDY_CONFIG_VOLUME:-tyxnet_caddy-config}"
+
+networks:
+  tyxnet:
+    driver: bridge

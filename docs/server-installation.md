@@ -23,6 +23,11 @@ the tunnel, and starts Caddy for public HTTPS. Caddy generates its configuration
 from the selected address and automatically renews domain certificates or
 Let's Encrypt short-lived public-IP certificates.
 
+For a trusted-LAN-only deployment, leave both public address variables empty.
+TyxNet remains available over HTTP on the configured LAN port, while Caddy runs
+a private no-op configuration and does not request a certificate. Do not expose
+the LAN, ACME, or HTTPS host ports through the modem in this mode.
+
 The default host ports are TCP 18080 for ACME HTTP validation and TCP/UDP 18443
 for HTTPS. Forward WAN TCP 443 to host TCP 18443 for TLS-ALPN-01 validation, or
 WAN TCP 80 to host TCP 18080 for HTTP-01. Also forward WAN TCP 18443 for user
@@ -31,6 +36,20 @@ both services after host reboots, so the web console hides **Run at startup** in
 containers and does not invoke systemd. Keep the Compose project directory
 stable and never use `down -v` during updates because the volumes contain the
 database and certificate state.
+
+CasaOS must import the complete `docker-compose.yml` as one Custom Install
+application so `tyxnet-server` and `caddy` remain on the same project network.
+The image-owned Caddy entrypoint reads `TYXNET_DOMAIN` or `TYXNET_PUBLIC_IP`
+inside the running container and generates the Caddyfile there; no shell
+variable references remain in Compose `command` for CasaOS to expand early.
+An explicit network alias keeps `tyxnet-server:8443` resolvable even if CasaOS
+renames containers. Only the two documented address variables are passed to
+Caddy, and no host environment map is passed to the server.
+
+Named-volume defaults match a prior `-p tyxnet` deployment. When an older or
+CasaOS-created project used different names, inspect `docker volume ls` and set
+the three `TYXNET_*_VOLUME` values to those existing names before importing.
+Never delete, recreate, or use `down -v` on the old volumes during migration.
 
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open

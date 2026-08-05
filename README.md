@@ -51,7 +51,7 @@ curl -fLo .env https://raw.githubusercontent.com/fbeser/tyxnet/main/.env.example
 nano .env
 ```
 
-Set exactly one public address in `.env`:
+For HTTPS, set exactly one public address in `.env`:
 
 ```dotenv
 # Public IP without a domain
@@ -63,9 +63,20 @@ TYXNET_PUBLIC_IP=
 TYXNET_DOMAIN=vpn.example.com
 ```
 
+For a trusted-LAN-only installation without HTTPS, leave both values empty:
+
+```dotenv
+TYXNET_PUBLIC_IP=
+TYXNET_DOMAIN=
+```
+
+The server remains available at `http://RASPBERRY_PI_OR_SERVER_IP:8443` and
+Caddy starts with a private no-op configuration instead of entering a restart
+loop. Do not forward TCP 8443, 18080, or 18443 from the modem in this mode.
+
 Leave the remaining port values unchanged unless they conflict with another
 service. `TYXNET_VERSION=latest` follows new releases; use a version such as
-`0.3.2` to pin the deployment.
+`0.3.3` to pin the deployment.
 
 Start everything with current Compose:
 
@@ -145,12 +156,63 @@ not a second Wi-Fi address. During the external test,
 host: no incoming SYN means the problem is still in the modem, ISP firewall or
 CGNAT path.
 
-CasaOS may import the two Compose services as separate applications and rename
-their containers, which removes the `tyxnet-server` Docker DNS alias and causes
-Caddy to return `502`. Prefer starting this stack directly with the documented
-`docker-compose` command. If `docker-compose ps` does not list the
-running containers, inspect `docker ps` and the Caddy logs before changing the
-upstream; do not hard-code a transient container IP.
+#### CasaOS: import as one application
+
+CasaOS must receive the complete `docker-compose.yml` in one import. Open
+**App Store → Custom Install → Import**, paste or upload the whole Compose file,
+and verify that the preview contains both `tyxnet-server` and `caddy` before
+installing. Do not create two Custom Install applications and do not import the
+services separately.
+
+In the imported Caddy service environment, set one address for HTTPS:
+
+```text
+TYXNET_PUBLIC_IP=203.0.113.10
+TYXNET_DOMAIN=
+```
+
+For a domain, leave `TYXNET_PUBLIC_IP` empty and set `TYXNET_DOMAIN` instead.
+For LAN-only HTTP, leave both values empty; the application remains healthy and
+the dashboard is available on the configured `TYXNET_LAN_PORT`.
+The Caddy entrypoint is stored inside the TyxNet image, so CasaOS cannot expand
+its shell variables while parsing Compose. Both services join the same Compose
+bridge network, and the explicit `tyxnet-server` network alias remains valid
+even if CasaOS chooses different container names. Do not replace the proxy
+upstream with a container IP.
+
+CasaOS can customize `TYXNET_VERSION`, LAN/tunnel/HTTPS host ports, and volume
+names while importing. Only `TYXNET_DOMAIN` and `TYXNET_PUBLIC_IP` are passed to
+Caddy; the server receives no host environment map. Unrelated host variables
+such as `OPENAI_API_KEY` are therefore not copied into either container.
+
+The default volume names deliberately match earlier installs created with
+project name `tyxnet`:
+
+```text
+tyxnet_tyxnet-data
+tyxnet_caddy-data
+tyxnet_caddy-config
+```
+
+Before migration, identify the actual names with
+`docker volume ls --format '{{.Name}}'`. If they differ, set
+`TYXNET_DATA_VOLUME`, `TYXNET_CADDY_DATA_VOLUME`, and
+`TYXNET_CADDY_CONFIG_VOLUME` to those existing names during import. Stop the old
+application only after confirming the names. Never use `down -v`, delete a
+volume, or create an empty replacement volume during migration.
+
+After CasaOS starts the single application, verify the shared DNS path:
+
+```bash
+sudo docker exec "$(sudo docker ps -qf name=caddy | head -n1)" \
+  wget -qO- http://tyxnet-server:8443/ >/dev/null
+sudo docker logs "$(sudo docker ps -qf name=caddy | head -n1)"
+```
+
+The first command proves that Caddy's container can resolve and reach
+`tyxnet-server:8443`. A generated Caddy configuration no longer appears in
+Compose `Config.Cmd`; it is created only after the container starts and reads
+its own environment.
 
 Already enrolled clients keep their device identity; only change `server:` to
 the new HTTPS URL and restart TyxNet. Windows stores this file at
@@ -208,8 +270,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.2/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.2/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.3/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.3/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 

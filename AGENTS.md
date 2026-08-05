@@ -22,6 +22,9 @@
 `docker-compose.yml` is the canonical Docker deployment for LAN access and
 domain or public-IP HTTPS. Keep it compatible with legacy Compose 1.29; do not
 add parallel Compose variants when environment variables can express the mode.
+CasaOS must import both services as one application. Keep Caddy startup logic in
+the image-owned `packaging/docker/caddy-entrypoint.sh`, not inline Compose shell,
+and preserve the explicit shared-network alias and configurable volume names.
 
 Server-only code must not leak into client packages. Portable protocol messages
 must never import OS packages. Keep entrypoints thin and inject dependencies.
