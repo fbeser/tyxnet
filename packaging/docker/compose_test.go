@@ -14,35 +14,24 @@ type composeFile struct {
 	Version  string                    `yaml:"version"`
 	Services map[string]composeService `yaml:"services"`
 	Volumes  map[string]composeVolume  `yaml:"volumes"`
-	Networks map[string]composeNetwork `yaml:"networks"`
+	Networks map[string]any            `yaml:"networks"`
 }
 
 type composeService struct {
 	Image       string            `yaml:"image"`
-	Command     []string          `yaml:"command"`
-	Entrypoint  []string          `yaml:"entrypoint"`
 	Environment map[string]string `yaml:"environment"`
+	CapAdd      []string          `yaml:"cap_add"`
+	Devices     []string          `yaml:"devices"`
 	Ports       []string          `yaml:"ports"`
-	Networks    map[string]struct {
-		Aliases []string `yaml:"aliases"`
-	} `yaml:"networks"`
+	Volumes     []string          `yaml:"volumes"`
 }
 
 type composeVolume struct {
 	Name string `yaml:"name"`
 }
 
-type composeNetwork struct {
-	Name   string `yaml:"name"`
-	Driver string `yaml:"driver"`
-}
-
-func TestCanonicalComposeSupportsLANAndHTTPS(t *testing.T) {
-	_, testFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate compose test")
-	}
-	composePath := filepath.Join(filepath.Dir(testFile), "..", "..", "docker-compose.yml")
+func TestCanonicalComposeUsesOneContainer(t *testing.T) {
+	composePath := repositoryFile(t, "docker-compose.yml")
 	data, err := os.ReadFile(composePath)
 	if err != nil {
 		t.Fatal(err)
@@ -55,53 +44,45 @@ func TestCanonicalComposeSupportsLANAndHTTPS(t *testing.T) {
 	if config.Version != "3.3" {
 		t.Fatalf("compose version = %q", config.Version)
 	}
-
-	server, ok := config.Services["tyxnet-server"]
+	if len(config.Services) != 1 {
+		t.Fatalf("compose services = %v", config.Services)
+	}
+	service, ok := config.Services["tyxnet-server"]
 	if !ok {
 		t.Fatal("tyxnet-server service is missing")
 	}
-	if !strings.Contains(server.Image, "${TYXNET_VERSION:-latest}") {
-		t.Fatalf("server image is not version-configurable: %q", server.Image)
+	if !strings.Contains(service.Image, "${TYXNET_VERSION:-latest}") {
+		t.Fatalf("server image is not version-configurable: %q", service.Image)
 	}
-	if len(server.Environment) != 0 {
-		t.Fatalf("server must not inherit host environment: %v", server.Environment)
-	}
-	assertContains(t, server.Ports, "${TYXNET_LAN_PORT:-8443}:8443/tcp")
-	assertContains(t, server.Ports, "${TYXNET_TUNNEL_PORT:-51830}:51830/udp")
-	serverNetwork, ok := server.Networks["tyxnet"]
-	if !ok {
-		t.Fatal("server is not attached to the tyxnet network")
-	}
-	assertContains(t, serverNetwork.Aliases, "tyxnet-server")
-
-	caddy, ok := config.Services["caddy"]
-	if !ok {
-		t.Fatal("caddy service is missing")
-	}
-	if caddy.Image != server.Image {
-		t.Fatalf("caddy image %q does not match server image %q", caddy.Image, server.Image)
-	}
-	if len(caddy.Entrypoint) != 1 || caddy.Entrypoint[0] != "/usr/local/bin/tyxnet-caddy-entrypoint" {
-		t.Fatalf("unexpected caddy entrypoint: %v", caddy.Entrypoint)
-	}
-	if len(caddy.Command) != 0 {
-		t.Fatalf("caddy command must not contain inline shell: %v", caddy.Command)
-	}
-	if len(caddy.Environment) != 2 {
-		t.Fatalf("unexpected caddy environment: %v", caddy.Environment)
+	if len(service.Environment) != 2 {
+		t.Fatalf("unexpected container environment: %v", service.Environment)
 	}
 	for _, variable := range []string{"TYXNET_DOMAIN", "TYXNET_PUBLIC_IP"} {
-		if _, ok := caddy.Environment[variable]; !ok {
-			t.Fatalf("caddy environment does not contain %q", variable)
+		if _, ok := service.Environment[variable]; !ok {
+			t.Fatalf("container environment does not contain %q", variable)
 		}
 	}
-	assertContains(t, caddy.Ports, "${TYXNET_HTTP_CHALLENGE_PORT:-18080}:80/tcp")
-	assertContains(t, caddy.Ports, "${TYXNET_HTTPS_PORT:-18443}:443/tcp")
-	assertContains(t, caddy.Ports, "${TYXNET_HTTPS_PORT:-18443}:443/udp")
-	if _, ok := caddy.Networks["tyxnet"]; !ok {
-		t.Fatal("caddy is not attached to the tyxnet network")
+	assertContains(t, service.CapAdd, "NET_ADMIN")
+	assertContains(t, service.Devices, "/dev/net/tun:/dev/net/tun")
+	for _, port := range []string{
+		"${TYXNET_LAN_PORT:-8443}:8443/tcp",
+		"${TYXNET_TUNNEL_PORT:-51830}:51830/udp",
+		"${TYXNET_HTTP_CHALLENGE_PORT:-18080}:80/tcp",
+		"${TYXNET_HTTPS_PORT:-18443}:443/tcp",
+		"${TYXNET_HTTPS_PORT:-18443}:443/udp",
+	} {
+		assertContains(t, service.Ports, port)
 	}
-
+	for _, volume := range []string{
+		"tyxnet-data:/var/lib/tyxnet",
+		"caddy-data:/data",
+		"caddy-config:/config",
+	} {
+		assertContains(t, service.Volumes, volume)
+	}
+	if len(config.Networks) != 0 {
+		t.Fatalf("single-container compose should not define networks: %v", config.Networks)
+	}
 	for volume, expectedName := range map[string]string{
 		"tyxnet-data":  "${TYXNET_DATA_VOLUME:-tyxnet_tyxnet-data}",
 		"caddy-data":   "${TYXNET_CADDY_DATA_VOLUME:-tyxnet_caddy-data}",
@@ -111,9 +92,33 @@ func TestCanonicalComposeSupportsLANAndHTTPS(t *testing.T) {
 			t.Fatalf("volume %q name = %q", volume, config.Volumes[volume].Name)
 		}
 	}
-	if network := config.Networks["tyxnet"]; network.Name != "" || network.Driver != "bridge" {
-		t.Fatalf("unexpected tyxnet network: %+v", network)
+}
+
+func TestDockerImageUsesSupervisorEntrypoint(t *testing.T) {
+	data, err := os.ReadFile(repositoryFile(t, "packaging", "docker", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	dockerfile := string(data)
+	for _, expected := range []string{
+		"COPY packaging/docker/entrypoint.sh /usr/local/bin/tyxnet-entrypoint",
+		"STOPSIGNAL SIGTERM",
+		"ENTRYPOINT [\"/usr/local/bin/tyxnet-entrypoint\"]",
+	} {
+		if !strings.Contains(dockerfile, expected) {
+			t.Fatalf("Dockerfile does not contain %q", expected)
+		}
+	}
+}
+
+func repositoryFile(t *testing.T, path ...string) string {
+	t.Helper()
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate repository")
+	}
+	parts := append([]string{filepath.Dir(testFile), "..", ".."}, path...)
+	return filepath.Join(parts...)
 }
 
 func assertContains(t *testing.T, values []string, expected string) {

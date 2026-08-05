@@ -1,4 +1,4 @@
-.PHONY: build build-server build-client build-tray build-server-tray build-cli test test-race vet lint fmt web docker clean release package-windows package-macos
+.PHONY: build build-server build-client build-tray build-server-tray build-cli test test-race test-docker vet lint fmt web docker clean release package-windows package-macos
 GO ?= go
 BIN := bin
 
@@ -19,6 +19,8 @@ test:
 	$(GO) test ./...
 test-race:
 	$(GO) test -race ./...
+test-docker:
+	sh scripts/test-docker.sh
 vet:
 	$(GO) vet ./...
 lint:

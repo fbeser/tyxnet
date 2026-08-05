@@ -4,40 +4,23 @@ services:
   tyxnet-server:
     image: "ghcr.io/fbeser/tyxnet:${TYXNET_VERSION:-latest}"
     restart: unless-stopped
-    command: ["run", "--config", "/etc/tyxnet/server.https.yaml"]
+    environment:
+      TYXNET_DOMAIN: "${TYXNET_DOMAIN:-}"
+      TYXNET_PUBLIC_IP: "${TYXNET_PUBLIC_IP:-}"
     cap_add:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
-    expose:
-      - "8443"
     ports:
       - "${TYXNET_LAN_PORT:-8443}:8443/tcp"
       - "${TYXNET_TUNNEL_PORT:-51830}:51830/udp"
-    volumes:
-      - tyxnet-data:/var/lib/tyxnet
-    networks:
-      tyxnet:
-        aliases:
-          - tyxnet-server
-
-  caddy:
-    image: "ghcr.io/fbeser/tyxnet:${TYXNET_VERSION:-latest}"
-    restart: unless-stopped
-    entrypoint: ["/usr/local/bin/tyxnet-caddy-entrypoint"]
-    command: []
-    environment:
-      TYXNET_DOMAIN: "${TYXNET_DOMAIN:-}"
-      TYXNET_PUBLIC_IP: "${TYXNET_PUBLIC_IP:-}"
-    ports:
       - "${TYXNET_HTTP_CHALLENGE_PORT:-18080}:80/tcp"
       - "${TYXNET_HTTPS_PORT:-18443}:443/tcp"
       - "${TYXNET_HTTPS_PORT:-18443}:443/udp"
     volumes:
+      - tyxnet-data:/var/lib/tyxnet
       - caddy-data:/data
       - caddy-config:/config
-    networks:
-      tyxnet: {}
 
 volumes:
   tyxnet-data:
@@ -46,7 +29,3 @@ volumes:
     name: "${TYXNET_CADDY_DATA_VOLUME:-tyxnet_caddy-data}"
   caddy-config:
     name: "${TYXNET_CADDY_CONFIG_VOLUME:-tyxnet_caddy-config}"
-
-networks:
-  tyxnet:
-    driver: bridge

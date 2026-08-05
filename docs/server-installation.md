@@ -17,11 +17,12 @@ reachable.
 
 For Docker on amd64 or arm64, download `docker-compose.yml` and `.env.example`,
 save the latter as `.env`, set either `TYXNET_DOMAIN` or `TYXNET_PUBLIC_IP`, and
-run `docker compose up -d`. The single legacy-Compose-compatible stack pulls the
-published GHCR image, publishes TCP 8443 for trusted-LAN setup and UDP 51830 for
-the tunnel, and starts Caddy for public HTTPS. Caddy generates its configuration
-from the selected address and automatically renews domain certificates or
-Let's Encrypt short-lived public-IP certificates.
+run `docker compose up -d`. The single legacy-Compose-compatible service pulls
+the published GHCR image and runs TyxNet plus Caddy in one container. It
+publishes TCP 8443 for trusted-LAN setup, UDP 51830 for the tunnel, and the ACME
+and HTTPS ports. The supervisor starts TyxNet, waits for its local HTTP listener,
+then starts Caddy. Caddy automatically renews domain certificates or Let's
+Encrypt short-lived public-IP certificates.
 
 For a trusted-LAN-only deployment, leave both public address variables empty.
 TyxNet remains available over HTTP on the configured LAN port, while Caddy runs
@@ -31,25 +32,29 @@ the LAN, ACME, or HTTPS host ports through the modem in this mode.
 The default host ports are TCP 18080 for ACME HTTP validation and TCP/UDP 18443
 for HTTPS. Forward WAN TCP 443 to host TCP 18443 for TLS-ALPN-01 validation, or
 WAN TCP 80 to host TCP 18080 for HTTP-01. Also forward WAN TCP 18443 for user
-access and WAN UDP 51830 for tunneled traffic. Compose restart policies start
-both services after host reboots, so the web console hides **Run at startup** in
+access and WAN UDP 51830 for tunneled traffic. The Compose restart policy starts
+the container after host reboots, so the web console hides **Run at startup** in
 containers and does not invoke systemd. Keep the Compose project directory
 stable and never use `down -v` during updates because the volumes contain the
 database and certificate state.
 
 CasaOS must import the complete `docker-compose.yml` as one Custom Install
-application so `tyxnet-server` and `caddy` remain on the same project network.
-The image-owned Caddy entrypoint reads `TYXNET_DOMAIN` or `TYXNET_PUBLIC_IP`
-inside the running container and generates the Caddyfile there; no shell
-variable references remain in Compose `command` for CasaOS to expand early.
-An explicit network alias keeps `tyxnet-server:8443` resolvable even if CasaOS
-renames containers. Only the two documented address variables are passed to
-Caddy, and no host environment map is passed to the server.
+application containing only the `tyxnet-server` service. The image-owned
+supervisor reads `TYXNET_DOMAIN` or `TYXNET_PUBLIC_IP` inside the running
+container and generates the Caddyfile there; no shell variable references remain
+in Compose `command` for CasaOS to expand early. Caddy proxies to the colocated
+server at `127.0.0.1:8443`, so Docker DNS and CasaOS container renaming cannot
+break the upstream. No host environment map is passed to the container.
 
 Named-volume defaults match a prior `-p tyxnet` deployment. When an older or
 CasaOS-created project used different names, inspect `docker volume ls` and set
 the three `TYXNET_*_VOLUME` values to those existing names before importing.
 Never delete, recreate, or use `down -v` on the old volumes during migration.
+For the previous two-container layout, run `docker compose down` with its old
+Compose file before replacing the file, then start the new single-container
+layout with the same project and volume names. CasaOS users must stop the old
+application without selecting **Delete data**, confirm the named volumes still
+exist, and import the new Compose file.
 
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open

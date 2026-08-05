@@ -41,8 +41,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
-        with: {context: ., file: packaging/docker/Dockerfile, push: false}
+      - run: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200 && sudo chmod 666 /dev/net/tun
+      - run: sh scripts/test-docker.sh
   vulnerability:
     runs-on: ubuntu-latest
     steps:
