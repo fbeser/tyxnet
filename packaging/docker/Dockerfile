@@ -9,6 +9,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags=
 
 FROM alpine:3.21
 RUN apk add --no-cache iproute2 && mkdir -p /var/lib/tyxnet
+ENV TYXNET_CONTAINER=1
 COPY --from=build /tyxnet-server /usr/local/bin/tyxnet-server
 COPY configs/server.docker.yaml /etc/tyxnet/server.yaml
 # Creating and configuring /dev/net/tun requires root plus NET_ADMIN. The

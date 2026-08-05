@@ -29,29 +29,30 @@ import (
 )
 
 type Server struct {
-	store           *storage.Store
-	network         string
-	ttl             time.Duration
-	started         time.Time
-	log             *slog.Logger
-	limiter         *ipLimiter
-	challengeMu     sync.Mutex
-	challenges      map[string]challenge
-	connectionsMu   sync.RWMutex
-	connections     map[string]int
-	localBootstrap  bool
-	remoteBootstrap bool
-	adapterName     string
-	adapterAddress  string
-	pingIntervalNS  atomic.Int64
-	startupSpec     application.StartupSpec
-	trayToken       string
-	shutdown        func()
-	startupEnabled  func(application.StartupSpec) (bool, error)
-	setStartup      func(application.StartupSpec, bool) error
-	traffic         *routing.TrafficMonitor
-	commandMu       sync.Mutex
-	commandSignals  map[string]chan struct{}
+	store            *storage.Store
+	network          string
+	ttl              time.Duration
+	started          time.Time
+	log              *slog.Logger
+	limiter          *ipLimiter
+	challengeMu      sync.Mutex
+	challenges       map[string]challenge
+	connectionsMu    sync.RWMutex
+	connections      map[string]int
+	localBootstrap   bool
+	remoteBootstrap  bool
+	adapterName      string
+	adapterAddress   string
+	pingIntervalNS   atomic.Int64
+	startupSpec      application.StartupSpec
+	trayToken        string
+	shutdown         func()
+	startupAvailable func() (bool, string)
+	startupEnabled   func(application.StartupSpec) (bool, error)
+	setStartup       func(application.StartupSpec, bool) error
+	traffic          *routing.TrafficMonitor
+	commandMu        sync.Mutex
+	commandSignals   map[string]chan struct{}
 }
 
 func (s *Server) SetAdapter(name, address string) {
@@ -82,7 +83,7 @@ type ctxKey string
 const userKey ctxKey = "user"
 
 func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger, localBootstrap bool) *Server {
-	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, traffic: routing.NewTrafficMonitor(), commandSignals: map[string]chan struct{}{}}
+	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupAvailable: application.StartupAvailable, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, traffic: routing.NewTrafficMonitor(), commandSignals: map[string]chan struct{}{}}
 	s.pingIntervalNS.Store(int64(25 * time.Second))
 	if value, err := store.Setting(context.Background(), "ping_interval"); err == nil {
 		if interval, parseErr := time.ParseDuration(value); parseErr == nil && validPingInterval(interval) {
@@ -192,12 +193,17 @@ func (s *Server) trayStatus(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "forbidden", "local tray authentication required")
 		return
 	}
-	enabled, err := s.startupEnabled(s.startupSpec)
-	if err != nil {
-		problem(w, 500, "startup_status_failed", err.Error())
-		return
+	available, reason := s.startupAvailable()
+	enabled := false
+	if available {
+		var err error
+		enabled, err = s.startupEnabled(s.startupSpec)
+		if err != nil {
+			problem(w, 500, "startup_status_failed", err.Error())
+			return
+		}
 	}
-	write(w, 200, map[string]any{"running": true, "startup_enabled": enabled})
+	write(w, 200, map[string]any{"running": true, "startup_available": available, "startup_enabled": enabled, "startup_reason": reason})
 }
 
 func (s *Server) trayStartup(w http.ResponseWriter, r *http.Request) {
@@ -228,6 +234,10 @@ func (s *Server) updateStartup(w http.ResponseWriter, r *http.Request, actor sto
 	}
 	if decode(r, &in) != nil {
 		problem(w, 400, "invalid_request", "enabled is required")
+		return
+	}
+	if available, reason := s.startupAvailable(); !available {
+		problem(w, 409, "startup_unavailable", reason)
 		return
 	}
 	if err := s.setStartup(s.startupSpec, in.Enabled); err != nil {
@@ -625,12 +635,17 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !permit(w, u, "server.configure") {
 			return
 		}
-		enabled, err := s.startupEnabled(s.startupSpec)
-		if err != nil {
-			problem(w, 500, "startup_status_failed", err.Error())
-			return
+		available, reason := s.startupAvailable()
+		enabled := false
+		if available {
+			var err error
+			enabled, err = s.startupEnabled(s.startupSpec)
+			if err != nil {
+				problem(w, 500, "startup_status_failed", err.Error())
+				return
+			}
 		}
-		write(w, 200, map[string]bool{"enabled": enabled})
+		write(w, 200, map[string]any{"available": available, "enabled": enabled, "reason": reason})
 	case r.Method == "PATCH" && path == "server/startup":
 		if !permit(w, u, "server.configure") {
 			return

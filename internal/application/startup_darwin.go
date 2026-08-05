@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+func StartupAvailable() (bool, string) { return true, "" }
+
 func StartupEnabled(spec StartupSpec) (bool, error) {
 	_, err := os.Stat(daemonPath(spec))
 	if err == nil {

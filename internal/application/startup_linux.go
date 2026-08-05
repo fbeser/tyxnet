@@ -14,6 +14,9 @@ import (
 )
 
 func StartupEnabled(spec StartupSpec) (bool, error) {
+	if available, _ := StartupAvailable(); !available {
+		return false, nil
+	}
 	err := exec.Command("systemctl", "is-enabled", "--quiet", spec.ID+".service").Run()
 	if err == nil {
 		return true, nil
@@ -26,6 +29,9 @@ func StartupEnabled(spec StartupSpec) (bool, error) {
 }
 
 func SetStartup(spec StartupSpec, enabled bool) error {
+	if available, reason := StartupAvailable(); !available {
+		return errors.New(reason)
+	}
 	unitPath := "/etc/systemd/system/" + spec.ID + ".service"
 	envPath := "/etc/tyxnet/" + spec.ID + "-startup.env"
 	if !enabled {
@@ -56,6 +62,25 @@ func SetStartup(spec StartupSpec, enabled bool) error {
 		return fmt.Errorf("enable systemd service: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func StartupAvailable() (bool, string) {
+	if os.Getenv("TYXNET_CONTAINER") != "" {
+		return false, "startup is managed by the container runtime"
+	}
+	for _, marker := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(marker); err == nil {
+			return false, "startup is managed by the container runtime"
+		}
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false, "systemd is not available on this host"
+	}
+	initName, err := os.ReadFile("/proc/1/comm")
+	if err != nil || strings.TrimSpace(string(initName)) != "systemd" {
+		return false, "systemd is not the active service manager"
+	}
+	return true, ""
 }
 
 func systemdLine(executable string, args []string) string {

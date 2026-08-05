@@ -178,8 +178,8 @@ paths:
     get: {description: Returns administrator-managed runtime settings including the device ping interval, security: [{bearerAuth: []}], responses: {'200': {description: Server settings}}}
     patch: {description: Persists the device ping interval in seconds (5-3600), security: [{bearerAuth: []}], responses: {'200': {description: Updated settings}}}
   /api/v1/server/startup:
-    get: {description: Returns the operating-system startup registration state, security: [{bearerAuth: []}], responses: {'200': {description: Startup state}}}
-    patch: {description: Administrator-only creation or removal of the platform startup registration, security: [{bearerAuth: []}], responses: {'200': {description: Updated startup state}}}
+    get: {description: Returns startup availability, registration state, and an unavailability reason when startup is managed by a container runtime, security: [{bearerAuth: []}], responses: {'200': {description: Startup capability and state}}}
+    patch: {description: Administrator-only creation or removal of the platform startup registration, security: [{bearerAuth: []}], responses: {'200': {description: Updated startup state}, '409': {description: Startup registration is unavailable in this runtime}}}
   /api/v1/commands:
     get:
       description: Returns recent commands with queued, delivered, accepted, succeeded, failed, or expired status and sanitized result fields.

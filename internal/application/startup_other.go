@@ -4,6 +4,10 @@ package application
 
 import "errors"
 
+func StartupAvailable() (bool, string) {
+	return false, "startup integration is not supported on this platform"
+}
+
 func StartupEnabled(StartupSpec) (bool, error) {
 	return false, errors.New("startup integration is not supported on this platform")
 }

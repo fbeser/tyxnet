@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+func StartupAvailable() (bool, string) { return true, "" }
+
 func StartupEnabled(spec StartupSpec) (bool, error) {
 	err := exec.Command("schtasks.exe", "/Query", "/TN", taskName(spec)).Run()
 	if err == nil {

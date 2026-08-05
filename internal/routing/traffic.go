@@ -93,7 +93,7 @@ func (m *TrafficMonitor) Snapshot() TrafficSnapshot {
 	flows := make(map[trafficKey]trafficCount)
 	rateBytes := make(map[trafficKey]uint64)
 	series := make([]TrafficPoint, 0, trafficWindowSeconds)
-	snapshot := TrafficSnapshot{GeneratedAt: now, WindowSeconds: trafficWindowSeconds, RateWindowSeconds: rateWindowSeconds, Ready: m.ready}
+	snapshot := TrafficSnapshot{GeneratedAt: now, WindowSeconds: trafficWindowSeconds, RateWindowSeconds: rateWindowSeconds, Ready: m.ready, Flows: make([]TrafficFlow, 0)}
 	for offset := trafficWindowSeconds - 1; offset >= 0; offset-- {
 		second := currentSecond - int64(offset)
 		point := TrafficPoint{Timestamp: time.Unix(second, 0).UTC()}

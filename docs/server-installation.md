@@ -18,7 +18,9 @@ For Docker on amd64 or arm64, download `docker-compose.yml` and run
 `docker compose up -d`. Compose pulls the published GHCR image instead of
 compiling on the host. The default publishes TCP 8443 to the trusted LAN for
 first setup and UDP 51830 for the tunnel; configure TLS before untrusted-network
-exposure.
+exposure. The Compose restart policy starts TyxNet after host reboots. The web
+console therefore hides **Run at startup** in containers and does not invoke
+systemd there.
 
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open

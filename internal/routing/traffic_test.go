@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
 	"net"
 	"testing"
@@ -37,5 +39,15 @@ func TestTrafficMonitorRejectsInvalidObservations(t *testing.T) {
 	monitor.Observe(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"), 0)
 	if snapshot := monitor.Snapshot(); snapshot.Bytes != 0 || snapshot.Packets != 0 {
 		t.Fatalf("invalid traffic was recorded: %+v", snapshot)
+	}
+}
+
+func TestTrafficMonitorEmptySnapshotUsesJSONArrays(t *testing.T) {
+	payload, err := json.Marshal(NewTrafficMonitor().Snapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(payload, []byte(`"flows":[]`)) || bytes.Contains(payload, []byte(`"series":null`)) {
+		t.Fatalf("empty snapshot must use arrays: %s", payload)
 	}
 }

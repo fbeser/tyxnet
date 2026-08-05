@@ -79,7 +79,9 @@ http://RASPBERRY_PI_OR_SERVER_IP:8443
 ```
 
 The first page creates the initial administrator. Docker stores the database in
-the persistent `tyxnet-data` volume.
+the persistent `tyxnet-data` volume. Compose already starts the server after a
+host reboot through `restart: unless-stopped`, so the dashboard hides **Run at
+startup** inside containers; systemd is neither installed nor required there.
 
 Update or remove the container:
 

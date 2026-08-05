@@ -470,6 +470,9 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("Network flows")) || !bytes.Contains(w.Body.Bytes(), []byte("renderFlowMap")) {
 		t.Fatal("network flow panel is missing")
 	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("Array.isArray(raw.flows)")) {
+		t.Fatal("network flow response normalization is missing")
+	}
 }
 
 func TestAdminUpdatesStaticIPAndPingInterval(t *testing.T) {
@@ -530,6 +533,7 @@ func TestAuthenticatedLocalTrayControlsStartupAndShutdown(t *testing.T) {
 	admin, _ := st.CreateInitialAdmin(context.Background(), "admin", "hash")
 	session, _ := st.CreateSession(context.Background(), admin.ID, time.Hour)
 	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	server.startupAvailable = func() (bool, string) { return true, "" }
 	server.startupEnabled = func(application.StartupSpec) (bool, error) { return true, nil }
 	var startupValue bool
 	server.setStartup = func(_ application.StartupSpec, enabled bool) error { startupValue = enabled; return nil }
@@ -581,5 +585,45 @@ func TestAuthenticatedLocalTrayControlsStartupAndShutdown(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("tray quit did not stop the application")
+	}
+}
+
+func TestContainerStartupIsUnavailableWithoutSystemCalls(t *testing.T) {
+	ctx := context.Background()
+	st, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	admin, _ := st.CreateInitialAdmin(ctx, "admin", "hash")
+	session, _ := st.CreateSession(ctx, admin.ID, time.Hour)
+	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	server.startupAvailable = func() (bool, string) {
+		return false, "startup is managed by the container runtime"
+	}
+	server.startupEnabled = func(application.StartupSpec) (bool, error) {
+		t.Fatal("startup state must not call systemctl when unavailable")
+		return false, nil
+	}
+	server.setStartup = func(application.StartupSpec, bool) error {
+		t.Fatal("startup update must not write a systemd unit when unavailable")
+		return nil
+	}
+	h := server.Handler()
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/server/startup", nil)
+	r.Header.Set("Authorization", "Bearer "+session)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"available":false`)) {
+		t.Fatalf("container startup state: %d %s", w.Code, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodPatch, "/api/v1/server/startup", bytes.NewBufferString(`{"enabled":true}`))
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !bytes.Contains(w.Body.Bytes(), []byte(`"code":"startup_unavailable"`)) {
+		t.Fatalf("container startup update: %d %s", w.Code, w.Body.String())
 	}
 }
