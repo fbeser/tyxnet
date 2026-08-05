@@ -36,21 +36,41 @@ private IPv4 identities, and appear in a role-aware web console.
 This is the easiest server installation. The Compose file pulls a public
 multiarch image; Raspberry Pi does **not** compile the Go project locally.
 
-Requirements: 64-bit Linux, Docker Engine, Docker Compose v2, and
-`/dev/net/tun`. Raspberry Pi OS should report `aarch64` from `uname -m`.
-If `docker compose version` fails, install
-[Docker Engine](https://docs.docker.com/engine/install/) and the
-[Compose plugin](https://docs.docker.com/compose/install/linux/) first.
+Requirements: 64-bit Linux, Docker Engine, Docker Compose v2 or legacy Compose
+v1.29, and `/dev/net/tun`. Raspberry Pi OS should report `aarch64` from
+`uname -m`.
+
+Download the Compose file first:
 
 ```bash
 mkdir tyxnet && cd tyxnet
 curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.yml
+```
+
+#### Current Docker Compose v2
+
+```bash
+sudo docker compose version
+sudo docker compose pull
 sudo docker compose up -d
 sudo docker compose logs -f tyxnet-server
 ```
 
-Legacy Compose also works with `sudo docker-compose up -d`, although Docker
-recommends the current `docker compose` plugin for maintained installations.
+If `docker compose version` fails, install the
+[Compose plugin](https://docs.docker.com/compose/install/linux/) or update
+[Docker Engine](https://docs.docker.com/engine/install/).
+
+#### Legacy `docker-compose`
+
+```bash
+sudo docker-compose --version
+sudo docker-compose pull
+sudo docker-compose up -d
+sudo docker-compose logs -f tyxnet-server
+```
+
+Legacy Compose remains available for older Raspberry Pi installations, although
+Docker recommends the maintained Compose v2 plugin.
 
 Open the dashboard from another device on the trusted LAN:
 
@@ -71,6 +91,9 @@ sudo docker compose up -d
 # Stop without deleting data
 sudo docker compose down
 ```
+
+With legacy Compose, replace `docker compose` with `docker-compose` in these
+commands.
 
 Published image:
 
