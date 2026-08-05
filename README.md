@@ -49,6 +49,9 @@ sudo docker compose up -d
 sudo docker compose logs -f tyxnet-server
 ```
 
+Legacy Compose also works with `sudo docker-compose up -d`, although Docker
+recommends the current `docker compose` plugin for maintained installations.
+
 Open the dashboard from another device on the trusted LAN:
 
 ```text

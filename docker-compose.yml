@@ -1,7 +1,6 @@
 services:
   tyxnet-server:
     image: ghcr.io/fbeser/tyxnet:latest
-    pull_policy: always
     restart: unless-stopped
     command: ["run", "--config", "/etc/tyxnet/server.yaml", "--lan-web"]
     cap_add:
