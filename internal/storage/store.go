@@ -29,6 +29,7 @@ type User struct {
 type Device struct {
 	ID, UserID, Name, VirtualIP, OS, Arch, Version string
 	Revoked                                        bool
+	Online                                         bool
 	LastSeen                                       *time.Time
 	CreatedAt                                      time.Time
 }

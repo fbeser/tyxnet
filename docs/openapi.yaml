@@ -51,7 +51,7 @@ paths:
   /control/v1/connect:
     post: {description: Verifies Ed25519 proof and opens the versioned SSE control stream carrying authoritative virtual-IP and ping-interval state, responses: {'200': {description: Event stream}, '403': {description: Invalid proof}}}
   /api/v1/devices:
-    get: {description: Admin/operator/viewer receive all devices; member receives only devices owned by that user, security: [{bearerAuth: []}], responses: {'200': {description: Role-scoped devices}}}
+    get: {description: Admin/operator/viewer receive all devices; member receives only devices owned by that user. Each device includes the server-authoritative Online live-connection state., security: [{bearerAuth: []}], responses: {'200': {description: Role-scoped devices}}}
   /api/v1/devices/{id}:
     patch:
       description: Renames a device or, for administrators, assigns a persistent virtual IPv4 address inside the TyxNet network.

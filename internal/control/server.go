@@ -34,6 +34,8 @@ type Server struct {
 	limiter         *ipLimiter
 	challengeMu     sync.Mutex
 	challenges      map[string]challenge
+	connectionsMu   sync.RWMutex
+	connections     map[string]int
 	localBootstrap  bool
 	remoteBootstrap bool
 	adapterName     string
@@ -74,7 +76,7 @@ type ctxKey string
 const userKey ctxKey = "user"
 
 func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger, localBootstrap bool) *Server {
-	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, localBootstrap: localBootstrap, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup}
+	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup}
 	s.pingIntervalNS.Store(int64(25 * time.Second))
 	if value, err := store.Setting(context.Background(), "ping_interval"); err == nil {
 		if interval, parseErr := time.ParseDuration(value); parseErr == nil && validPingInterval(interval) {
@@ -89,6 +91,35 @@ func validPingInterval(interval time.Duration) bool {
 }
 
 func (s *Server) pingInterval() time.Duration { return time.Duration(s.pingIntervalNS.Load()) }
+
+func (s *Server) deviceConnected(deviceID string) {
+	s.connectionsMu.Lock()
+	s.connections[deviceID]++
+	s.connectionsMu.Unlock()
+}
+
+func (s *Server) deviceDisconnected(deviceID string) {
+	s.connectionsMu.Lock()
+	if s.connections[deviceID] <= 1 {
+		delete(s.connections, deviceID)
+	} else {
+		s.connections[deviceID]--
+	}
+	s.connectionsMu.Unlock()
+}
+
+func (s *Server) deviceOnline(deviceID string) bool {
+	s.connectionsMu.RLock()
+	online := s.connections[deviceID] > 0
+	s.connectionsMu.RUnlock()
+	return online
+}
+
+func (s *Server) setDevicePresence(devices []storage.Device) {
+	for i := range devices {
+		devices[i].Online = !devices[i].Revoked && s.deviceOnline(devices[i].ID)
+	}
+}
 
 func (s *Server) SetDefaultPingInterval(interval time.Duration) {
 	if _, err := s.store.Setting(context.Background(), "ping_interval"); err == nil {
@@ -387,8 +418,12 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "internal", "device state unavailable")
 		return
 	}
+	s.deviceConnected(in.DeviceID)
+	defer s.deviceDisconnected(in.DeviceID)
 	connected, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": device.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds())})
-	_, _ = fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connected)
+	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connected); err != nil {
+		return
+	}
 	f.Flush()
 	for {
 		timer := time.NewTimer(s.pingInterval())
@@ -399,11 +434,16 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		case <-timer.C:
-			_ = s.store.TouchDevice(r.Context(), in.DeviceID)
-			current, _ := s.store.Device(r.Context(), in.DeviceID)
+			current, err := s.store.Device(r.Context(), in.DeviceID)
+			if err != nil {
+				return
+			}
 			payload, _ := json.Marshal(map[string]any{"protocol_version": 1, "virtual_ip": current.VirtualIP, "virtual_network": s.network, "ping_interval_seconds": int(s.pingInterval().Seconds())})
-			_, _ = fmt.Fprintf(w, "event: ping\ndata: %s\n\n", payload)
+			if _, err := fmt.Fprintf(w, "event: ping\ndata: %s\n\n", payload); err != nil {
+				return
+			}
 			f.Flush()
+			_ = s.store.TouchDevice(r.Context(), in.DeviceID)
 		}
 	}
 }
@@ -427,6 +467,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		} else {
 			v, err = s.store.ListDevices(r.Context())
 		}
+		s.setDevicePresence(v)
 		respond(w, v, err)
 	case r.Method == "PATCH" && strings.HasPrefix(path, "devices/"):
 		if !permit(w, u, "device.rename") {
@@ -595,12 +636,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		us, _ := s.store.Users(r.Context())
 		cs, _ := s.store.ListCommands(r.Context(), 500)
 		online, active := 0, 0
-		onlineWindow := 3 * s.pingInterval()
-		if onlineWindow < 90*time.Second {
-			onlineWindow = 90 * time.Second
-		}
 		for _, d := range ds {
-			if d.LastSeen != nil && time.Since(*d.LastSeen) < onlineWindow && !d.Revoked {
+			if !d.Revoked && s.deviceOnline(d.ID) {
 				online++
 			}
 		}

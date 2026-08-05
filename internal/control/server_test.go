@@ -56,6 +56,34 @@ func TestAPIAuthorizationAndLogin(t *testing.T) {
 	}
 }
 
+func TestDeviceConnectionPresence(t *testing.T) {
+	ctx := context.Background()
+	st, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	devices := []storage.Device{{ID: "device-1"}, {ID: "revoked", Revoked: true}}
+	server.deviceConnected("device-1")
+	server.deviceConnected("device-1")
+	server.deviceConnected("revoked")
+	server.setDevicePresence(devices)
+	if !devices[0].Online || devices[1].Online {
+		t.Fatalf("unexpected presence state: %+v", devices)
+	}
+
+	server.deviceDisconnected("device-1")
+	if !server.deviceOnline("device-1") {
+		t.Fatal("one of two live connections must keep the device online")
+	}
+	server.deviceDisconnected("device-1")
+	if server.deviceOnline("device-1") {
+		t.Fatal("device must become offline after its final connection closes")
+	}
+}
+
 func TestLocalWebBootstrap(t *testing.T) {
 	ctx := context.Background()
 	st, err := storage.Open(ctx, ":memory:")
