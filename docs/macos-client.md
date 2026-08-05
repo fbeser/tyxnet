@@ -15,7 +15,7 @@ its utun after receiving the authoritative virtual network and forwards IPv4
 packets through the encrypted UDP data plane.
 
 `tyxnet-tray` builds natively on macOS with Cocoa and places the same role-aware
-device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.3.1` creates
+device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.3.2` creates
 an ad-hoc-signed universal DMG for local testing. Public distribution still
 requires a Developer ID signature and Apple notarization.
 

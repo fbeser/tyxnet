@@ -19,6 +19,10 @@
   embedded by the client. Keep it separate from the server console.
 - `packaging/`, `configs/`, `docs/`: deployment, examples and authoritative docs.
 
+`docker-compose.yml` is the canonical Docker deployment for LAN access and
+domain or public-IP HTTPS. Keep it compatible with legacy Compose 1.29; do not
+add parallel Compose variants when environment variables can express the mode.
+
 Server-only code must not leak into client packages. Portable protocol messages
 must never import OS packages. Keep entrypoints thin and inject dependencies.
 

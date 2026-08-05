@@ -1,16 +1,66 @@
+version: "3.3"
+
 services:
   tyxnet-server:
-    image: ghcr.io/fbeser/tyxnet:latest
+    image: "ghcr.io/fbeser/tyxnet:${TYXNET_VERSION:-latest}"
     restart: unless-stopped
-    command: ["run", "--config", "/etc/tyxnet/server.yaml", "--lan-web"]
+    command: ["run", "--config", "/etc/tyxnet/server.https.yaml"]
     cap_add:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
+    expose:
+      - "8443"
     ports:
-      - "8443:8443/tcp"
-      - "51830:51830/udp"
+      - "${TYXNET_LAN_PORT:-8443}:8443/tcp"
+      - "${TYXNET_TUNNEL_PORT:-51830}:51830/udp"
     volumes:
       - tyxnet-data:/var/lib/tyxnet
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        if [ -n "$${TYXNET_DOMAIN}" ]; then
+          printf '%s\n' \
+            "https://$${TYXNET_DOMAIN} {" \
+            "    reverse_proxy tyxnet-server:8443" \
+            "}" > /tmp/Caddyfile
+        elif [ -n "$${TYXNET_PUBLIC_IP}" ]; then
+          printf '%s\n' \
+            "{" \
+            "    default_sni $${TYXNET_PUBLIC_IP}" \
+            "}" \
+            "" \
+            "https://$${TYXNET_PUBLIC_IP} {" \
+            "    tls {" \
+            "        issuer acme {" \
+            "            dir https://acme-v02.api.letsencrypt.org/directory" \
+            "            profile shortlived" \
+            "        }" \
+            "    }" \
+            "    reverse_proxy tyxnet-server:8443" \
+            "}" > /tmp/Caddyfile
+        else
+          echo "Set TYXNET_DOMAIN or TYXNET_PUBLIC_IP in .env" >&2
+          exit 1
+        fi
+        exec caddy run --config /tmp/Caddyfile --adapter caddyfile
+    environment:
+      TYXNET_DOMAIN: "${TYXNET_DOMAIN:-}"
+      TYXNET_PUBLIC_IP: "${TYXNET_PUBLIC_IP:-}"
+    ports:
+      - "${TYXNET_HTTP_CHALLENGE_PORT:-18080}:80/tcp"
+      - "${TYXNET_HTTPS_PORT:-18443}:443/tcp"
+      - "${TYXNET_HTTPS_PORT:-18443}:443/udp"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+
 volumes:
   tyxnet-data:
+  caddy-data:
+  caddy-config:

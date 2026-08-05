@@ -33,159 +33,106 @@ private IPv4 identities, and appear in a role-aware web console.
 
 ### Raspberry Pi or Linux with Docker
 
-This is the easiest server installation. The Compose file pulls a public
-multiarch image; Raspberry Pi does **not** compile the Go project locally.
+This is the easiest server installation. One Compose file starts TyxNet and
+Caddy, provides trusted-LAN access on TCP 8443, and enables public HTTPS with
+either a domain or a static public IP. Raspberry Pi does **not** compile the Go
+project locally.
 
 Requirements: 64-bit Linux, Docker Engine, Docker Compose v2 or legacy Compose
 v1.29, and `/dev/net/tun`. Raspberry Pi OS should report `aarch64` from
 `uname -m`.
 
-Download the Compose file first:
+Download the Compose file and environment template:
 
 ```bash
-mkdir tyxnet && cd tyxnet
+mkdir -p tyxnet && cd tyxnet
 curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.yml
+curl -fLo .env https://raw.githubusercontent.com/fbeser/tyxnet/main/.env.example
+nano .env
 ```
 
-#### Current Docker Compose v2
+Set exactly one public address in `.env`:
+
+```dotenv
+# Public IP without a domain
+TYXNET_PUBLIC_IP=203.0.113.10
+TYXNET_DOMAIN=
+
+# Or a domain whose A/AAAA record points to this server
+TYXNET_PUBLIC_IP=
+TYXNET_DOMAIN=vpn.example.com
+```
+
+Leave the remaining port values unchanged unless they conflict with another
+service. `TYXNET_VERSION=latest` follows new releases; use a version such as
+`0.3.2` to pin the deployment.
+
+Start everything with current Compose:
 
 ```bash
-sudo docker compose version
 sudo docker compose pull
 sudo docker compose up -d
-sudo docker compose logs -f tyxnet-server
+sudo docker compose ps
 ```
 
-If `docker compose version` fails, install the
-[Compose plugin](https://docs.docker.com/compose/install/linux/) or update
-[Docker Engine](https://docs.docker.com/engine/install/).
-
-#### Legacy `docker-compose`
+On older Raspberry Pi installations, the same file works with legacy Compose:
 
 ```bash
-sudo docker-compose --version
 sudo docker-compose pull
 sudo docker-compose up -d
-sudo docker-compose logs -f tyxnet-server
+sudo docker-compose ps
 ```
 
-Legacy Compose remains available for older Raspberry Pi installations, although
-Docker recommends the maintained Compose v2 plugin.
+If `docker compose version` fails but `docker-compose --version` succeeds, use
+the second command form consistently. Compose stores the database and Caddy
+certificates in persistent Docker volumes and starts both services after a host
+reboot through `restart: unless-stopped`.
 
-Open the dashboard from another device on the trusted LAN:
+For initial setup on the trusted LAN, open:
 
 ```text
 http://RASPBERRY_PI_OR_SERVER_IP:8443
 ```
 
-The first page creates the initial administrator. Docker stores the database in
-the persistent `tyxnet-data` volume. Compose already starts the server after a
-host reboot through `restart: unless-stopped`, so the dashboard hides **Run at
-startup** inside containers; systemd is neither installed nor required there.
+The first page creates the initial administrator. The dashboard hides **Run at
+startup** inside containers because Compose already handles startup; systemd is
+neither installed nor required there.
 
-Update or remove the container:
+### Public HTTPS and modem forwarding
 
-```bash
-# Update
-sudo docker compose pull
-sudo docker compose up -d
-
-# Stop without deleting data
-sudo docker compose down
-```
-
-With legacy Compose, replace `docker compose` with `docker-compose` in these
-commands.
-
-Published image:
+Caddy automatically obtains and renews the certificate. For a domain, forward
+the standard public ports to the configured host ports. With the default `.env`:
 
 ```text
-ghcr.io/fbeser/tyxnet:latest
-```
-
-Architectures: `linux/amd64` and `linux/arm64`.
-
-### Public HTTPS with Docker
-
-A public deployment needs a domain whose A/AAAA record points to the server.
-Forward TCP `80` and `443`, plus UDP `51830`, from the modem to the Raspberry Pi.
-Then run the HTTPS Compose stack:
-
-```bash
-mkdir -p tyxnet && cd tyxnet
-curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.https.yml
-printf 'TYXNET_DOMAIN=vpn.example.com\n' > .env
-sudo docker compose -f docker-compose.https.yml pull
-sudo docker compose -f docker-compose.https.yml up -d
-```
-
-Legacy Compose uses the same commands with `docker-compose`. Caddy obtains and
-renews the public certificate automatically. Open `https://vpn.example.com` and
-configure every client with that HTTPS URL. Do not expose the server's internal
-TCP `8443` listener when using this stack.
-
-#### Public-IP HTTPS without a domain
-
-TyxNet can also use a publicly trusted, short-lived Let's Encrypt certificate
-for a static public IPv4 or IPv6 address. This path was verified on Raspberry Pi
-5 with Debian 12, Docker 20.10 and legacy Compose 1.29. The certificate is valid
-for about six days; Caddy renews it automatically, so its data volume and an
-ACME validation route must remain available.
-
-Download the IP-specific stack and set the public IP:
-
-```bash
-mkdir -p tyxnet && cd tyxnet
-curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/docker-compose.ip-https.yml
-curl -fLO https://raw.githubusercontent.com/fbeser/tyxnet/main/Caddyfile.ip
-printf 'TYXNET_PUBLIC_IP=203.0.113.10\nTYXNET_HTTP_CHALLENGE_PORT=18080\nTYXNET_HTTPS_PORT=18443\n' > .env
-```
-
-Replace `203.0.113.10` with the host's public IP. If an existing TyxNet Compose
-stack is running in this directory, stop it without deleting its volume:
-
-```bash
-sudo docker-compose -p tyxnet -f docker-compose.yml down
-sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml config
-sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml pull
-sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml up -d
-```
-
-Never add `-v` to `down`; the existing `tyxnet_tyxnet-data` volume contains the
-database and is reused because the project name remains `tyxnet`. Compose v2
-users can replace `docker-compose` with `docker compose`.
-
-The defaults keep CasaOS or another gateway on Raspberry Pi TCP `80`: Caddy
-binds host TCP `18080` for ACME HTTP validation and host TCP `18443` for HTTPS.
-The supplied Caddyfile also sets the public IP as `default_sni`; this is required
-for browsers and clients that omit SNI when connecting directly to an IP address.
-Configure the modem with either ACME validation path and the public service
-ports:
-
-```text
-# TLS-ALPN-01 validation; TCP 80 is not required when this path works
-WAN TCP 443   -> RASPBERRY_PI_LAN_IP TCP 18443
-
-# Optional HTTP-01 alternative when host TCP 80 is occupied
 WAN TCP 80    -> RASPBERRY_PI_LAN_IP TCP 18080
-
-# User access and encrypted TyxNet tunnel
+WAN TCP 443   -> RASPBERRY_PI_LAN_IP TCP 18443
 WAN TCP 18443 -> RASPBERRY_PI_LAN_IP TCP 18443
 WAN UDP 51830 -> RASPBERRY_PI_LAN_IP UDP 51830
 ```
 
-At least one standard ACME route, WAN TCP `443` or WAN TCP `80`, must reach
-Caddy. The dashboard and enrolled clients then use:
+Public-IP certificates are short-lived Let's Encrypt certificates. At least one
+standard ACME validation route, WAN TCP 443 or WAN TCP 80, must reach Caddy.
+The TCP 18443 rule is the user-facing HTTPS service and UDP 51830 carries the
+encrypted TyxNet tunnel.
+
+Use one of these URLs for the dashboard and every client:
 
 ```text
 https://PUBLIC_IP:18443
+https://vpn.example.com:18443
 ```
 
-Verify the containers, certificate and local proxy path:
+If the domain is served directly on host TCP 443, set `TYXNET_HTTPS_PORT=443`
+and use `https://vpn.example.com` without a port suffix. Public-IP HTTPS was
+verified on Raspberry Pi 5 with Debian 12, Docker 20.10, and legacy Compose
+1.29. Its certificate is valid for about six days and Caddy renews it
+automatically.
+
+Check the server, proxy, certificate, and tunnel:
 
 ```bash
-sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml ps
-sudo docker-compose -p tyxnet -f docker-compose.ip-https.yml logs -f caddy
+sudo docker-compose ps
+sudo docker-compose logs -f caddy
 openssl s_client -connect 127.0.0.1:18443 -servername PUBLIC_IP -verify_return_error </dev/null
 curl --resolve PUBLIC_IP:18443:127.0.0.1 https://PUBLIC_IP:18443/
 ```
@@ -201,7 +148,7 @@ CGNAT path.
 CasaOS may import the two Compose services as separate applications and rename
 their containers, which removes the `tyxnet-server` Docker DNS alias and causes
 Caddy to return `502`. Prefer starting this stack directly with the documented
-`docker-compose -p tyxnet` command. If `docker-compose ... ps` does not list the
+`docker-compose` command. If `docker-compose ps` does not list the
 running containers, inspect `docker ps` and the Caddy logs before changing the
 upstream; do not hard-code a transient container IP.
 
@@ -210,6 +157,18 @@ the new HTTPS URL and restart TyxNet. Windows stores this file at
 `C:\ProgramData\TyxNet\client.yaml`; macOS stores it under
 `~/Library/Application Support/TyxNet/client.yaml`. No new enrollment token is
 required.
+
+Update or stop the stack without deleting its data:
+
+```bash
+sudo docker-compose pull && sudo docker-compose up -d
+sudo docker-compose down
+```
+
+Never add `-v` to `down` during updates or HTTPS migration. It deletes the
+TyxNet database and Caddy certificate state. Compose v2 users can replace
+`docker-compose` with `docker compose`. The published multiarch image is
+`ghcr.io/fbeser/tyxnet:latest` for `linux/amd64` and `linux/arm64`.
 
 ### macOS
 
@@ -249,8 +208,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.1/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.1/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.2/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.2/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 

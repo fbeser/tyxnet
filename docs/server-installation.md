@@ -15,30 +15,22 @@ for control-plane-only development. Adapters exchange virtual-IP traffic through
 the central encrypted UDP data plane when HTTPS control and UDP 51830 are
 reachable.
 
-For Docker on amd64 or arm64, download `docker-compose.yml` and run
-`docker compose up -d`. Compose pulls the published GHCR image instead of
-compiling on the host. The default publishes TCP 8443 to the trusted LAN for
-first setup and UDP 51830 for the tunnel; configure TLS before untrusted-network
-exposure. The Compose restart policy starts TyxNet after host reboots. The web
-console therefore hides **Run at startup** in containers and does not invoke
-systemd there.
+For Docker on amd64 or arm64, download `docker-compose.yml` and `.env.example`,
+save the latter as `.env`, set either `TYXNET_DOMAIN` or `TYXNET_PUBLIC_IP`, and
+run `docker compose up -d`. The single legacy-Compose-compatible stack pulls the
+published GHCR image, publishes TCP 8443 for trusted-LAN setup and UDP 51830 for
+the tunnel, and starts Caddy for public HTTPS. Caddy generates its configuration
+from the selected address and automatically renews domain certificates or
+Let's Encrypt short-lived public-IP certificates.
 
-For public HTTPS, point a domain at the server and use
-`docker-compose.https.yml`. Forward TCP 80/443 and UDP 51830 to the host. Caddy
-terminates TLS and automatically renews the certificate; TyxNet TCP 8443 remains
-private to the Compose network. Clients require the HTTPS URL before the server
-will issue encrypted UDP data-plane credentials.
-
-Without a domain, `docker-compose.ip-https.yml` requests a Let's Encrypt
-short-lived certificate for a static public IP and serves it on host TCP 18443.
-Its Caddyfile sets the IP as the default SNI so IP-literal clients receive the
-managed certificate even when their TLS ClientHello omits SNI.
-It defaults the ACME HTTP listener to host TCP 18080 so CasaOS can retain TCP 80.
-Forward WAN TCP 443 to host TCP 18443 for TLS-ALPN-01 validation, or WAN TCP 80
-to host TCP 18080 for HTTP-01. Also forward WAN TCP 18443 for user access and
-WAN UDP 51830 for tunneled traffic. Keep the Compose project name and working
-directory stable so the existing `tyxnet_tyxnet-data` volume is reused; never
-use `down -v` during migration.
+The default host ports are TCP 18080 for ACME HTTP validation and TCP/UDP 18443
+for HTTPS. Forward WAN TCP 443 to host TCP 18443 for TLS-ALPN-01 validation, or
+WAN TCP 80 to host TCP 18080 for HTTP-01. Also forward WAN TCP 18443 for user
+access and WAN UDP 51830 for tunneled traffic. Compose restart policies start
+both services after host reboots, so the web console hides **Run at startup** in
+containers and does not invoke systemd. Keep the Compose project directory
+stable and never use `down -v` during updates because the volumes contain the
+database and certificate state.
 
 For a headless host on a trusted LAN, `tyxnet-server run` listens on
 `0.0.0.0:8443` by default and enables remote first-admin setup. Open

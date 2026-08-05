@@ -4,7 +4,7 @@ Build the unsigned x64 MSI on macOS with:
 
 ```text
 brew install msitools
-sh scripts/package-windows.sh 0.3.1
+sh scripts/package-windows.sh 0.3.2
 ```
 
 The installer places the server, client, tray companions, CLI, and verified
