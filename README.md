@@ -143,8 +143,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.2.0/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.2.0/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.2.1/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.2.1/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 

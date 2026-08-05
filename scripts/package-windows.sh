@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-0.2.0}"
+version="${1:-0.2.1}"
 case "$version" in
   *[!0-9.]*|.*|*.|*..*) echo "MSI version must contain three numeric parts: $version" >&2; exit 1 ;;
 esac
