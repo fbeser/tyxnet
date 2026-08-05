@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-0.1.0}"
+version="${1:-0.2.0}"
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/tyxnet-macos.XXXXXX")
 trap 'rm -rf "$stage"' EXIT INT TERM
@@ -24,6 +24,9 @@ build_universal() {
   command_name=$1
   output_path=$2
   ldflags=$3
+  case "$command_name" in
+    tyxnet-client|tyxnet-server) ldflags="$ldflags -X github.com/fbeser/tyxnet/internal/buildinfo.Version=$version" ;;
+  esac
   cgo_enabled=0
   case "$command_name" in
     *tray) cgo_enabled=1 ;;

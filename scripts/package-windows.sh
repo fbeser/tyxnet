@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-0.1.0}"
+version="${1:-0.2.0}"
 case "$version" in
   *[!0-9.]*|.*|*.|*..*) echo "MSI version must contain three numeric parts: $version" >&2; exit 1 ;;
 esac
@@ -18,7 +18,7 @@ output="$repo_root/dist/TyxNet-$version-windows-amd64.msi"
 mkdir -p "$repo_root/dist"
 
 build() {
-  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$stage/$2" "$repo_root/cmd/$1"
+  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X github.com/fbeser/tyxnet/internal/buildinfo.Version=$version" -o "$stage/$2" "$repo_root/cmd/$1"
 }
 build tyxnet-client tyxnet-client.exe
 build tyxnet-server tyxnet-server.exe

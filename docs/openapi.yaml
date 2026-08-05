@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TyxNet API
-  version: 0.1.0
+  version: 0.2.0
   description: Experimental management, enrollment and device-control API.
 servers:
   - url: https://vpn.example.com:8443

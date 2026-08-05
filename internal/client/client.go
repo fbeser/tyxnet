@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/fbeser/tyxnet/internal/application"
+	"github.com/fbeser/tyxnet/internal/buildinfo"
 	"github.com/fbeser/tyxnet/internal/commands"
 	"github.com/fbeser/tyxnet/internal/config"
 	"github.com/fbeser/tyxnet/internal/platform"
@@ -104,7 +105,7 @@ func (c *Client) Join(ctx context.Context, token string) error {
 	if err != nil {
 		return err
 	}
-	in := map[string]any{"Token": token, "Name": c.Config.Name, "OS": runtime.GOOS, "Arch": runtime.GOARCH, "Version": "dev", "public_key": priv.Public().(ed25519.PublicKey)}
+	in := map[string]any{"Token": token, "Name": c.Config.Name, "OS": runtime.GOOS, "Arch": runtime.GOARCH, "Version": buildinfo.Version, "public_key": priv.Public().(ed25519.PublicKey)}
 	var d storage.Device
 	if err = c.request(ctx, "POST", "/api/v1/enroll", in, &d); err != nil {
 		return err
