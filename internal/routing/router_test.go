@@ -16,7 +16,8 @@ func packet(src, dst net.IP) []byte {
 	return b
 }
 func TestRoutingAndSpoofing(t *testing.T) {
-	r := New()
+	observed := 0
+	r := NewObserved(func(_, _ net.IP, packetBytes int) { observed += packetBytes })
 	s := &sink{}
 	r.Add(net.ParseIP("10.90.0.3"), s)
 	if err := r.Route(net.ParseIP("10.90.0.2"), packet(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"))); err != nil {
@@ -25,7 +26,13 @@ func TestRoutingAndSpoofing(t *testing.T) {
 	if len(s.b) == 0 {
 		t.Fatal("not routed")
 	}
+	if observed != len(s.b) {
+		t.Fatalf("observed bytes = %d, want %d", observed, len(s.b))
+	}
 	if err := r.Route(net.ParseIP("10.90.0.9"), packet(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"))); err == nil {
 		t.Fatal("spoof accepted")
+	}
+	if observed != len(s.b) {
+		t.Fatal("rejected packet was included in traffic telemetry")
 	}
 }

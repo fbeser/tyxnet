@@ -26,8 +26,8 @@ companion is implemented.
 ## Phase 4 — management
 
 Server management console, client role-scoped device panel, and bootstrap are
-implemented. Remaining work: richer RBAC/audit search and safe command
-delivery/results.
+implemented. Authenticated allowlisted command delivery and signed result
+reporting are implemented. Remaining work: richer RBAC and audit search.
 
 ## Phase 5 — scale
 

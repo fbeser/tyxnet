@@ -5,11 +5,15 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +21,7 @@ import (
 	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/config"
 	"github.com/fbeser/tyxnet/internal/tunnel"
+	"github.com/fbeser/tyxnet/pkg/protocol"
 )
 
 func TestApplyServerStatePersistsStaticIP(t *testing.T) {
@@ -80,6 +85,154 @@ func TestClientCreatesServerSpecificAdapter(t *testing.T) {
 		t.Fatal("different servers received the same adapter name")
 	}
 	c.closeAdapter()
+}
+
+func TestControlCommandExecutionAndSignedResults(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := bytes.Repeat([]byte{7}, 32)
+	var statuses []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/control/v1/challenge":
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": base64.RawStdEncoding.EncodeToString(nonce)})
+		case strings.HasPrefix(r.URL.Path, "/control/v1/commands/"):
+			var result protocol.CommandResult
+			if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			commandID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/control/v1/commands/"), "/result")
+			payload, payloadErr := protocol.CommandResultSigningPayload(nonce, result.DeviceID, commandID, result.Status, result.Result, result.Error)
+			signature, signatureErr := base64.RawStdEncoding.DecodeString(result.Signature)
+			if payloadErr != nil || signatureErr != nil || !ed25519.Verify(publicKey, payload, signature) {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			statuses = append(statuses, result.Status)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": result.Status})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := New(config.Client{ServerURL: server.URL})
+	client.key = privateKey
+	client.State.DeviceID = "dev_test"
+	executions := 0
+	client.executeCommand = func(_ context.Context, commandType string) error {
+		executions++
+		if commandType != "system.restart" {
+			t.Fatalf("unexpected command type: %s", commandType)
+		}
+		return nil
+	}
+	command := protocol.ControlCommand{ProtocolVersion: protocol.Version, ID: "cmd_test", Type: "system.restart", ExpiresAt: time.Now().Add(time.Minute)}
+	if err := client.handleControlCommand(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.handleControlCommand(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	if executions != 1 || len(statuses) != 2 || statuses[0] != "accepted" || statuses[1] != "succeeded" {
+		t.Fatalf("executions=%d statuses=%v", executions, statuses)
+	}
+	invalid := protocol.ControlCommand{ProtocolVersion: protocol.Version, ID: "cmd_invalid", Type: "shell.execute", ExpiresAt: time.Now().Add(time.Minute)}
+	if err := client.handleControlCommand(context.Background(), invalid); err == nil {
+		t.Fatal("non-allowlisted command was accepted")
+	}
+	if executions != 1 {
+		t.Fatal("non-allowlisted command reached the executor")
+	}
+}
+
+func TestControlCommandFailureAndReconnect(t *testing.T) {
+	_, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	statuses := make([]string, 0, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/control/v1/challenge" {
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))})
+			return
+		}
+		var result protocol.CommandResult
+		_ = json.NewDecoder(r.Body).Decode(&result)
+		statuses = append(statuses, result.Status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": result.Status})
+	}))
+	defer server.Close()
+	client := New(config.Client{ServerURL: server.URL})
+	client.key = privateKey
+	client.State.DeviceID = "dev_test"
+	client.executeCommand = func(context.Context, string) error { return errors.New("permission denied") }
+	failed := protocol.ControlCommand{ProtocolVersion: protocol.Version, ID: "cmd_failed", Type: "system.shutdown", ExpiresAt: time.Now().Add(time.Minute)}
+	if err := client.handleControlCommand(context.Background(), failed); err != nil {
+		t.Fatal(err)
+	}
+	reconnect := protocol.ControlCommand{ProtocolVersion: protocol.Version, ID: "cmd_reconnect", Type: "client.reconnect", ExpiresAt: time.Now().Add(time.Minute)}
+	if err := client.handleControlCommand(context.Background(), reconnect); !errors.Is(err, errReconnectRequested) {
+		t.Fatalf("reconnect result = %v", err)
+	}
+	want := []string{"accepted", "failed", "accepted", "succeeded"}
+	if !slices.Equal(statuses, want) {
+		t.Fatalf("statuses=%v want=%v", statuses, want)
+	}
+}
+
+func TestConnectProcessesCommandEvent(t *testing.T) {
+	_, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	nonce := bytes.Repeat([]byte{3}, 32)
+	statuses := make(chan string, 2)
+	done := make(chan struct{}, 1)
+	command := protocol.ControlCommand{ProtocolVersion: protocol.Version, ID: "cmd_stream", Type: "system.shutdown", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+	commandJSON, _ := json.Marshal(command)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/control/v1/challenge":
+			_ = json.NewEncoder(w).Encode(map[string]string{"challenge": base64.RawStdEncoding.EncodeToString(nonce)})
+		case r.URL.Path == "/control/v1/connect":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintf(w, "event: connected\ndata: {\"protocol_version\":1}\n\nevent: command\ndata: %s\n\n", commandJSON)
+			w.(http.Flusher).Flush()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Error("client did not report command completion")
+			}
+		case strings.HasPrefix(r.URL.Path, "/control/v1/commands/"):
+			var result protocol.CommandResult
+			_ = json.NewDecoder(r.Body).Decode(&result)
+			statuses <- result.Status
+			if result.Status == "succeeded" {
+				done <- struct{}{}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": result.Status})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	client := New(config.Client{ServerURL: server.URL})
+	client.key = privateKey
+	client.State.DeviceID = "dev_stream"
+	executed := 0
+	client.executeCommand = func(_ context.Context, commandType string) error {
+		executed++
+		if commandType != "system.shutdown" {
+			t.Fatalf("command type=%s", commandType)
+		}
+		return nil
+	}
+	if err := client.connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first, second := <-statuses, <-statuses
+	if executed != 1 || first != "accepted" || second != "succeeded" {
+		t.Fatalf("executed=%d statuses=%s,%s", executed, first, second)
+	}
 }
 
 func TestWebSetupEnrollsAndPersistsClient(t *testing.T) {

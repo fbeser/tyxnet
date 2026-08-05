@@ -10,7 +10,7 @@ const (
 )
 
 var permissions = map[Role]map[string]bool{
-	Admin: {"*": true}, Operator: {"device.view": true, "device.rename": true, "device.disconnect": true, "device.restart": true, "device.shutdown": true, "token.view": true, "audit.view": true}, Member: {"device.view": true}, Viewer: {"device.view": true, "user.view": true, "token.view": true, "audit.view": true},
+	Admin: {"*": true}, Operator: {"device.view": true, "device.rename": true, "device.disconnect": true, "device.restart": true, "device.shutdown": true, "token.view": true, "audit.view": true, "network.flow.view": true}, Member: {"device.view": true}, Viewer: {"device.view": true, "user.view": true, "token.view": true, "audit.view": true, "network.flow.view": true},
 }
 
 func Allowed(role Role, permission string) bool {

@@ -45,6 +45,7 @@
       <nav id="nav">
         <button data-page="dashboard" class="active">Overview</button>
         <button data-page="devices">Devices</button>
+        <button data-page="flows">Network flows</button>
         <button data-page="users">Users</button>
         <button data-page="tokens">Enrollment tokens</button>
         <button data-page="commands">Commands</button>
@@ -65,6 +66,16 @@
 
       <section id="page-devices" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Devices</h2><p>Assign persistent virtual IP addresses and manage enrolled members.</p></div></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Virtual IP</th><th>Platform</th><th>Status</th><th>Last seen</th><th>Actions</th></tr></thead><tbody id="devices-body"></tbody></table></div></article></section>
 
+      <section id="page-flows" class="page" hidden>
+        <div id="flow-stats" class="stats flow-stats"></div>
+        <article class="panel flow-state"><div><p class="eyebrow">Live telemetry</p><h2>Network map</h2><p id="flow-message">Loading routed packet telemetry…</p></div><span id="flow-state-badge" class="badge">Checking</span></article>
+        <div class="flow-grid">
+          <article class="panel"><div class="panel-head"><div><h2>Traffic topology</h2><p>Direction and current throughput between virtual IPs.</p></div></div><div id="flow-map" class="flow-map" role="img" aria-label="TyxNet traffic topology"></div></article>
+          <article class="panel"><div class="panel-head"><div><h2>Throughput</h2><p>Aggregate Mbps over the last 60 seconds.</p></div></div><div id="flow-chart" class="flow-chart" role="img" aria-label="TyxNet throughput chart"></div></article>
+        </div>
+        <article class="panel"><div class="panel-head"><div><h2>Active flows</h2><p>Only source, destination, packet count and byte totals are retained in memory.</p></div><small id="flow-updated" class="muted"></small></div><div class="table-wrap"><table><thead><tr><th>Source</th><th>Destination</th><th>Current rate</th><th>60s transfer</th><th>Packets</th></tr></thead><tbody id="flows-body"></tbody></table></div></article>
+      </section>
+
       <section id="page-users" class="page" hidden>
         <article class="panel form-panel"><div><h2>Add user</h2><p>Create a console identity and assign a role.</p></div><form id="user-form" class="inline-form"><input name="username" placeholder="Username" required maxlength="64"><input name="password" type="password" placeholder="Password (12+ characters)" required minlength="12"><select name="role"><option>member</option><option>viewer</option><option>operator</option><option>admin</option></select><button class="primary">Add user</button></form></article>
         <article class="panel"><div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>State</th><th>Created</th><th>Actions</th></tr></thead><tbody id="users-body"></tbody></table></div></article>
@@ -75,7 +86,7 @@
         <article class="panel"><div class="table-wrap"><table><thead><tr><th>ID</th><th>User</th><th>Expires</th><th>Usage</th><th>State</th><th>Actions</th></tr></thead><tbody id="tokens-body"></tbody></table></div></article>
       </section>
 
-      <section id="page-commands" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Command queue</h2><p>Only predefined types are accepted. Delivery and result reporting remain Experimental.</p></div></div><div class="table-wrap"><table><thead><tr><th>Command</th><th>Device</th><th>Type</th><th>Status</th><th>Created</th><th>Expires</th></tr></thead><tbody id="commands-body"></tbody></table></div></article></section>
+      <section id="page-commands" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Command delivery</h2><p>Allowlisted commands are authenticated, delivered to the target client, and tracked through completion.</p></div></div><div class="table-wrap"><table><thead><tr><th>Command</th><th>Device</th><th>Type</th><th>Status</th><th>Result</th><th>Created</th><th>Expires</th></tr></thead><tbody id="commands-body"></tbody></table></div></article></section>
       <section id="page-audit" class="page" hidden><article class="panel"><div class="panel-head"><div><h2>Audit log</h2><p>Security and management events</p></div></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Actor</th><th>Target</th><th>Remote address</th></tr></thead><tbody id="audit-body"></tbody></table></div></article></section>
     </main>
   </div>

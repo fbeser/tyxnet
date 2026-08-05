@@ -8,11 +8,15 @@ import (
 
 type Peer interface{ Send([]byte) error }
 type Router struct {
-	mu    sync.RWMutex
-	peers map[string]Peer
+	mu       sync.RWMutex
+	peers    map[string]Peer
+	observer func(source, destination net.IP, packetBytes int)
 }
 
-func New() *Router                      { return &Router{peers: make(map[string]Peer)} }
+func New() *Router { return &Router{peers: make(map[string]Peer)} }
+func NewObserved(observer func(source, destination net.IP, packetBytes int)) *Router {
+	return &Router{peers: make(map[string]Peer), observer: observer}
+}
 func (r *Router) Add(ip net.IP, p Peer) { r.mu.Lock(); defer r.mu.Unlock(); r.peers[ip.String()] = p }
 func (r *Router) Remove(ip net.IP)      { r.mu.Lock(); defer r.mu.Unlock(); delete(r.peers, ip.String()) }
 func (r *Router) Route(assigned net.IP, packet []byte) error {
@@ -25,10 +29,16 @@ func (r *Router) Route(assigned net.IP, packet []byte) error {
 		return errors.New("source IP spoofing rejected")
 	}
 	r.mu.RLock()
-	p := r.peers[dst.String()]
+	p, observer := r.peers[dst.String()], r.observer
 	r.mu.RUnlock()
 	if p == nil {
 		return errors.New("unknown destination")
 	}
-	return p.Send(append([]byte(nil), packet...))
+	if err := p.Send(append([]byte(nil), packet...)); err != nil {
+		return err
+	}
+	if observer != nil {
+		observer(src, dst, len(packet))
+	}
+	return nil
 }

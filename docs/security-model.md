@@ -11,10 +11,17 @@ audit events, AEAD, replay window, source-IP validation, input limits and privat
 key file mode 0600. The server can observe traffic metadata and, in the central
 design, is a high-value trusted relay.
 
+The flow dashboard is limited to admins, operators, and viewers because it
+reveals communication relationships across users. It records no payload,
+transport ports, DNS names, or protocol contents. Source/destination virtual IP,
+packet count, and byte count are held only in process memory for 60 seconds and
+are discarded on expiry or server restart. Packets rejected by source validation
+or routing are excluded from telemetry.
+
 Known gaps: unaudited protocol; unfinished UDP handshake/data plane; in-memory
 rate limits/challenges; no CSRF cookie flow (API uses bearer headers); no key
-rotation/recovery UX; no command delivery/results; and no completed client-side
-Windows or macOS adapter/data-plane integration. Native adapter creation requires
+rotation/recovery UX; and no completed client-side Windows or macOS
+adapter/data-plane integration. Native adapter creation requires
 elevated OS privileges. The Windows helper pins and verifies the official Wintun
 archive checksum before installing its DLL.
 TLS termination and hardening remain operator responsibilities.
@@ -34,9 +41,21 @@ Enrollment still requires a valid one-time token.
 Role-aware client management requires an explicit server-account login. The
 client proxies an allowlisted set of requests, while the server performs all
 authorization. Bearer sessions remain memory/session-storage only and expire
-normally. Tray device data and commands are available only through loopback;
+normally. Only administrators can reset user passwords. The server hashes the
+replacement with Argon2id and atomically revokes all bearer sessions belonging
+to that user; password values and hashes are excluded from audit details. Tray
+device data and commands are available only through loopback;
 remote requests to `/api/tray` are rejected. A local process running as the same
 OS user is within the trusted-host boundary.
+
+Remote commands are fixed enums delivered only after device authentication.
+Clients reject unknown types and expired commands, report `accepted` before
+execution, and deduplicate accepted IDs to avoid repeated destructive actions.
+Results require a fresh challenge and a domain-separated Ed25519 signature bound
+to the device, command, status, and sanitized result. The server never supplies
+an executable name, argument, script, or shell text. Windows, Linux, and macOS
+implement fixed argument arrays, and the service account must already possess
+the required shutdown privilege.
 
 Tray startup and shutdown operations additionally require a high-entropy token
 shared through the core and companion process environments. The endpoints also

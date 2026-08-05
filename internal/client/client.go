@@ -26,11 +26,15 @@ import (
 	"time"
 
 	"github.com/fbeser/tyxnet/internal/application"
+	"github.com/fbeser/tyxnet/internal/commands"
 	"github.com/fbeser/tyxnet/internal/config"
 	"github.com/fbeser/tyxnet/internal/platform"
 	"github.com/fbeser/tyxnet/internal/storage"
 	"github.com/fbeser/tyxnet/internal/tunnel"
+	"github.com/fbeser/tyxnet/pkg/protocol"
 )
+
+var errReconnectRequested = errors.New("server requested reconnect")
 
 type State struct {
 	mu             sync.RWMutex
@@ -73,10 +77,13 @@ type Client struct {
 	shutdown        func()
 	startupEnabled  func(application.StartupSpec) (bool, error)
 	setStartup      func(application.StartupSpec, bool) error
+	executeCommand  func(context.Context, string) error
+	commandMu       sync.Mutex
+	handledCommands map[string]time.Time
 }
 
 func New(c config.Client) *Client {
-	return &Client{Config: c, State: &State{Started: time.Now()}, HTTP: &http.Client{Timeout: 30 * time.Second}, ready: make(chan struct{}), ensureTunnel: platform.EnsureTunnel, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup}
+	return &Client{Config: c, State: &State{Started: time.Now()}, HTTP: &http.Client{Timeout: 30 * time.Second}, ready: make(chan struct{}), ensureTunnel: platform.EnsureTunnel, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, executeCommand: commands.ExecuteSystem, handledCommands: map[string]time.Time{}}
 }
 
 func (c *Client) ConfigureApplication(spec application.StartupSpec, trayToken string, shutdown func()) {
@@ -157,7 +164,12 @@ func (c *Client) Run(ctx context.Context) error {
 		if err := c.connect(ctx); err != nil {
 			c.State.mu.Lock()
 			c.State.Connected = false
-			c.State.LastError = err.Error()
+			if errors.Is(err, errReconnectRequested) {
+				c.State.LastError = ""
+				i = 0
+			} else {
+				c.State.LastError = err.Error()
+			}
 			c.State.mu.Unlock()
 		}
 		if ctx.Err() != nil {
@@ -206,18 +218,34 @@ func (c *Client) connect(ctx context.Context) error {
 	c.State.LastError = ""
 	c.State.mu.Unlock()
 	scanner := bufio.NewScanner(resp.Body)
+	eventType := ""
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return nil
 		}
 		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+			continue
+		}
 		if strings.HasPrefix(line, "data: ") {
+			data := []byte(strings.TrimPrefix(line, "data: "))
+			if eventType == "command" {
+				var command protocol.ControlCommand
+				if err := json.Unmarshal(data, &command); err != nil {
+					return fmt.Errorf("decode control command: %w", err)
+				}
+				if err := c.handleControlCommand(ctx, command); err != nil {
+					return err
+				}
+				continue
+			}
 			var update struct {
 				VirtualIP           string `json:"virtual_ip"`
 				VirtualNetwork      string `json:"virtual_network"`
 				PingIntervalSeconds int    `json:"ping_interval_seconds"`
 			}
-			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &update) == nil {
+			if json.Unmarshal(data, &update) == nil {
 				if err := c.applyServerState(ctx, update.VirtualIP, update.VirtualNetwork, update.PingIntervalSeconds); err != nil {
 					return err
 				}
@@ -225,6 +253,75 @@ func (c *Client) connect(ctx context.Context) error {
 		}
 	}
 	return scanner.Err()
+}
+
+func (c *Client) handleControlCommand(ctx context.Context, command protocol.ControlCommand) error {
+	if command.ProtocolVersion != protocol.Version || command.ID == "" || time.Now().After(command.ExpiresAt) {
+		return errors.New("server sent an invalid or expired command")
+	}
+	if command.Type != "system.restart" && command.Type != "system.shutdown" && command.Type != "client.reconnect" {
+		return errors.New("server sent a command outside the executable allowlist")
+	}
+	c.commandMu.Lock()
+	for commandID, expiresAt := range c.handledCommands {
+		if time.Now().After(expiresAt) {
+			delete(c.handledCommands, commandID)
+		}
+	}
+	_, alreadyHandled := c.handledCommands[command.ID]
+	c.commandMu.Unlock()
+	if alreadyHandled {
+		return nil
+	}
+	if err := c.reportCommandResult(ctx, command.ID, "accepted", "", ""); err != nil {
+		return fmt.Errorf("accept command: %w", err)
+	}
+	c.commandMu.Lock()
+	c.handledCommands[command.ID] = command.ExpiresAt
+	c.commandMu.Unlock()
+	if command.Type == "client.reconnect" {
+		if err := c.reportCommandResult(ctx, command.ID, "succeeded", "control connection reconnecting", ""); err != nil {
+			return fmt.Errorf("report reconnect: %w", err)
+		}
+		return errReconnectRequested
+	}
+	executionContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err := c.executeCommand(executionContext, command.Type)
+	cancel()
+	if err != nil {
+		if reportErr := c.reportCommandResult(ctx, command.ID, "failed", "", "system action failed"); reportErr != nil {
+			return fmt.Errorf("execute command: %v; report failure: %w", err, reportErr)
+		}
+		return nil
+	}
+	if err := c.reportCommandResult(ctx, command.ID, "succeeded", "system action scheduled", ""); err != nil {
+		return fmt.Errorf("report command success: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) reportCommandResult(ctx context.Context, commandID, status, resultText, errorText string) error {
+	for attempt := 0; attempt < 3; attempt++ {
+		var challenge struct {
+			Challenge string `json:"challenge"`
+		}
+		if err := c.request(ctx, http.MethodPost, "/control/v1/challenge", map[string]string{"device_id": c.State.DeviceID}, &challenge); err != nil {
+			continue
+		}
+		nonce, err := base64.RawStdEncoding.DecodeString(challenge.Challenge)
+		if err != nil {
+			continue
+		}
+		payload, err := protocol.CommandResultSigningPayload(nonce, c.State.DeviceID, commandID, status, resultText, errorText)
+		if err != nil {
+			return err
+		}
+		result := protocol.CommandResult{DeviceID: c.State.DeviceID, Status: status, Result: resultText, Error: errorText, Signature: base64.RawStdEncoding.EncodeToString(ed25519.Sign(c.key, payload))}
+		if err = c.request(ctx, http.MethodPost, "/control/v1/commands/"+commandID+"/result", result, nil); err == nil {
+			return nil
+		}
+	}
+	return errors.New("command result could not be authenticated with the server")
 }
 
 func (c *Client) applyServerState(ctx context.Context, virtualIP, virtualNetwork string, pingIntervalSeconds int) error {

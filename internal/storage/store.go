@@ -529,6 +529,28 @@ func (s *Store) UpdateUser(ctx context.Context, userID string, disabled bool, ro
 	}
 	return tx.Commit()
 }
+func (s *Store) UpdateUserPassword(ctx context.Context, userID, passwordHash string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, "UPDATE users SET password_hash=? WHERE id=?", passwordHash, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return sql.ErrNoRows
+	}
+	if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE user_id=?", userID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (s *Store) CreateCommand(ctx context.Context, sender, device, typ string, ttl time.Duration) (Command, error) {
 	allowed := map[string]bool{"system.restart": true, "system.shutdown": true, "client.reconnect": true, "client.status": true, "client.update-check": true, "logs.collect": true}
 	if !allowed[typ] {
@@ -537,9 +559,91 @@ func (s *Store) CreateCommand(ctx context.Context, sender, device, typ string, t
 	if ttl <= 0 || ttl > 5*time.Minute {
 		return Command{}, errors.New("command TTL must be between 0 and 5m")
 	}
+	var revoked int
+	if err := s.db.QueryRowContext(ctx, "SELECT revoked FROM devices WHERE id=?", device).Scan(&revoked); err != nil {
+		return Command{}, err
+	}
+	if revoked != 0 {
+		return Command{}, errors.New("device is revoked")
+	}
 	c := Command{ID: id("cmd"), SenderUserID: sender, DeviceID: device, Type: typ, Status: "queued", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(ttl)}
 	_, err := s.db.ExecContext(ctx, "INSERT INTO commands(id,sender_user_id,device_id,type,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?)", c.ID, c.SenderUserID, c.DeviceID, c.Type, c.Status, c.CreatedAt.Format(time.RFC3339Nano), c.ExpiresAt.Format(time.RFC3339Nano))
 	return c, err
+}
+func (s *Store) PendingCommandsForDevice(ctx context.Context, deviceID string, limit int) ([]Command, error) {
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := s.db.ExecContext(ctx, "UPDATE commands SET status='expired' WHERE device_id=? AND status IN ('queued','delivered') AND expires_at<=?", deviceID, now); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, "SELECT id,sender_user_id,device_id,type,status,result,error,created_at,expires_at FROM commands WHERE device_id=? AND status IN ('queued','delivered') AND expires_at>? ORDER BY created_at LIMIT ?", deviceID, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	commands := make([]Command, 0)
+	for rows.Next() {
+		command, err := scanCommand(rows)
+		if err != nil {
+			return nil, err
+		}
+		commands = append(commands, command)
+	}
+	return commands, rows.Err()
+}
+func (s *Store) MarkCommandDelivered(ctx context.Context, commandID, deviceID string) error {
+	result, err := s.db.ExecContext(ctx, "UPDATE commands SET status='delivered' WHERE id=? AND device_id=? AND status IN ('queued','delivered') AND expires_at>?", commandID, deviceID, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+func (s *Store) UpdateCommandResult(ctx context.Context, commandID, deviceID, status, resultText, errorText string) error {
+	allowed := map[string]bool{"accepted": true, "succeeded": true, "failed": true}
+	if !allowed[status] {
+		return errors.New("invalid command result status")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var current, expires string
+	if err = tx.QueryRowContext(ctx, "SELECT status,expires_at FROM commands WHERE id=? AND device_id=?", commandID, deviceID).Scan(&current, &expires); err != nil {
+		return err
+	}
+	expiresAt, parseErr := time.Parse(time.RFC3339Nano, expires)
+	active := current == "queued" || current == "delivered" || current == "accepted"
+	if parseErr != nil || active && time.Now().After(expiresAt) {
+		_, _ = tx.ExecContext(ctx, "UPDATE commands SET status='expired' WHERE id=?", commandID)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return commitErr
+		}
+		return errors.New("command expired")
+	}
+	if current == status {
+		return tx.Commit()
+	}
+	validTransition := status == "accepted" && (current == "queued" || current == "delivered") || (status == "succeeded" || status == "failed") && current == "accepted"
+	if !validTransition {
+		return fmt.Errorf("invalid command status transition from %s to %s", current, status)
+	}
+	if _, err = tx.ExecContext(ctx, "UPDATE commands SET status=?,result=?,error=? WHERE id=? AND device_id=?", status, resultText, errorText, commandID, deviceID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO command_results(id,command_id,status,result,created_at) VALUES(?,?,?,?,?)", id("res"), commandID, status, resultText, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) ListCommands(ctx context.Context, limit int) ([]Command, error) {
 	return s.listCommands(ctx, limit, "", nil)
@@ -551,6 +655,9 @@ func (s *Store) listCommands(ctx context.Context, limit int, scope string, args 
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE commands SET status='expired' WHERE status IN ('queued','delivered','accepted') AND expires_at<=?", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return nil, err
+	}
 	args = append(args, limit)
 	rows, err := s.db.QueryContext(ctx, "SELECT c.id,c.sender_user_id,c.device_id,c.type,c.status,c.result,c.error,c.created_at,c.expires_at FROM commands c"+scope+" ORDER BY c.created_at DESC LIMIT ?", args...)
 	if err != nil {
@@ -559,16 +666,28 @@ func (s *Store) listCommands(ctx context.Context, limit int, scope string, args 
 	defer func() { _ = rows.Close() }()
 	out := make([]Command, 0)
 	for rows.Next() {
-		var c Command
-		var created, expires string
-		if err := rows.Scan(&c.ID, &c.SenderUserID, &c.DeviceID, &c.Type, &c.Status, &c.Result, &c.Error, &created, &expires); err != nil {
+		command, err := scanCommand(rows)
+		if err != nil {
 			return nil, err
 		}
-		c.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-		c.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
-		out = append(out, c)
+		out = append(out, command)
 	}
 	return out, rows.Err()
+}
+
+type commandScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCommand(scanner commandScanner) (Command, error) {
+	var command Command
+	var created, expires string
+	if err := scanner.Scan(&command.ID, &command.SenderUserID, &command.DeviceID, &command.Type, &command.Status, &command.Result, &command.Error, &created, &expires); err != nil {
+		return Command{}, err
+	}
+	command.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	command.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
+	return command, nil
 }
 func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditLog, error) {
 	if limit < 1 || limit > 500 {

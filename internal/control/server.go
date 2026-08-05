@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
+	"database/sql"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -22,7 +23,9 @@ import (
 
 	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/auth"
+	"github.com/fbeser/tyxnet/internal/routing"
 	"github.com/fbeser/tyxnet/internal/storage"
+	"github.com/fbeser/tyxnet/pkg/protocol"
 )
 
 type Server struct {
@@ -46,6 +49,9 @@ type Server struct {
 	shutdown        func()
 	startupEnabled  func(application.StartupSpec) (bool, error)
 	setStartup      func(application.StartupSpec, bool) error
+	traffic         *routing.TrafficMonitor
+	commandMu       sync.Mutex
+	commandSignals  map[string]chan struct{}
 }
 
 func (s *Server) SetAdapter(name, address string) {
@@ -76,7 +82,7 @@ type ctxKey string
 const userKey ctxKey = "user"
 
 func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger, localBootstrap bool) *Server {
-	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup}
+	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, traffic: routing.NewTrafficMonitor(), commandSignals: map[string]chan struct{}{}}
 	s.pingIntervalNS.Store(int64(25 * time.Second))
 	if value, err := store.Setting(context.Background(), "ping_interval"); err == nil {
 		if interval, parseErr := time.ParseDuration(value); parseErr == nil && validPingInterval(interval) {
@@ -84,6 +90,25 @@ func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logg
 		}
 	}
 	return s
+}
+
+func (s *Server) TrafficMonitor() *routing.TrafficMonitor { return s.traffic }
+
+func (s *Server) commandSignal(deviceID string) chan struct{} {
+	s.commandMu.Lock()
+	defer s.commandMu.Unlock()
+	if s.commandSignals[deviceID] == nil {
+		s.commandSignals[deviceID] = make(chan struct{}, 1)
+	}
+	return s.commandSignals[deviceID]
+}
+
+func (s *Server) notifyCommand(deviceID string) {
+	signal := s.commandSignal(deviceID)
+	select {
+	case signal <- struct{}{}:
+	default:
+	}
 }
 
 func validPingInterval(interval time.Duration) bool {
@@ -142,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /api/v1/enroll", s.enroll)
 	m.HandleFunc("POST /control/v1/challenge", s.deviceChallenge)
 	m.HandleFunc("POST /control/v1/connect", s.deviceConnect)
+	m.HandleFunc("POST /control/v1/commands/{id}/result", s.deviceCommandResult)
 	m.HandleFunc("GET /api/tray", s.trayStatus)
 	m.HandleFunc("POST /api/tray/startup", s.trayStartup)
 	m.HandleFunc("POST /api/tray/quit", s.trayQuit)
@@ -424,16 +450,20 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 	if _, err := fmt.Fprintf(w, "event: connected\ndata: %s\n\n", connected); err != nil {
 		return
 	}
+	if err := s.writePendingCommands(r.Context(), w, in.DeviceID); err != nil {
+		return
+	}
 	f.Flush()
+	pingTimer := time.NewTimer(s.pingInterval())
+	commandTicker := time.NewTicker(2 * time.Second)
+	defer pingTimer.Stop()
+	defer commandTicker.Stop()
+	commandSignal := s.commandSignal(in.DeviceID)
 	for {
-		timer := time.NewTimer(s.pingInterval())
 		select {
 		case <-r.Context().Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
 			return
-		case <-timer.C:
+		case <-pingTimer.C:
 			current, err := s.store.Device(r.Context(), in.DeviceID)
 			if err != nil {
 				return
@@ -444,8 +474,65 @@ func (s *Server) deviceConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			f.Flush()
 			_ = s.store.TouchDevice(r.Context(), in.DeviceID)
+			pingTimer.Reset(s.pingInterval())
+		case <-commandTicker.C:
+			if err := s.writePendingCommands(r.Context(), w, in.DeviceID); err != nil {
+				return
+			}
+			f.Flush()
+		case <-commandSignal:
+			if err := s.writePendingCommands(r.Context(), w, in.DeviceID); err != nil {
+				return
+			}
+			f.Flush()
 		}
 	}
+}
+
+func (s *Server) writePendingCommands(ctx context.Context, w io.Writer, deviceID string) error {
+	commands, err := s.store.PendingCommandsForDevice(ctx, deviceID, 20)
+	if err != nil {
+		return err
+	}
+	for _, command := range commands {
+		if err := s.store.MarkCommandDelivered(ctx, command.ID, deviceID); err != nil {
+			continue
+		}
+		payload, err := json.Marshal(protocol.ControlCommand{ProtocolVersion: protocol.Version, ID: command.ID, Type: command.Type, CreatedAt: command.CreatedAt, ExpiresAt: command.ExpiresAt})
+		if err != nil {
+			return err
+		}
+		if _, err = fmt.Fprintf(w, "event: command\ndata: %s\n\n", payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) deviceCommandResult(w http.ResponseWriter, r *http.Request) {
+	commandID := r.PathValue("id")
+	var result protocol.CommandResult
+	if decode(r, &result) != nil || commandID == "" || len(result.Result) > 4096 || len(result.Error) > 4096 {
+		problem(w, 400, "invalid_command_result", "invalid command result")
+		return
+	}
+	s.challengeMu.Lock()
+	challenge, ok := s.challenges[result.DeviceID]
+	delete(s.challenges, result.DeviceID)
+	s.challengeMu.Unlock()
+	key, keyErr := s.store.DevicePublicKey(r.Context(), result.DeviceID)
+	signature, signatureErr := base64.RawStdEncoding.DecodeString(result.Signature)
+	payload, payloadErr := protocol.CommandResultSigningPayload(challenge.nonce, result.DeviceID, commandID, result.Status, result.Result, result.Error)
+	if !ok || time.Now().After(challenge.expires) || keyErr != nil || signatureErr != nil || payloadErr != nil || !ed25519.Verify(key, payload, signature) {
+		problem(w, 403, "authentication_failed", "invalid device proof")
+		return
+	}
+	if err := s.store.UpdateCommandResult(r.Context(), commandID, result.DeviceID, result.Status, result.Result, result.Error); err != nil {
+		problem(w, 409, "command_result_rejected", err.Error())
+		return
+	}
+	s.store.Audit(r.Context(), result.DeviceID, "command."+result.Status, commandID, r.RemoteAddr, "")
+	write(w, 200, map[string]string{"status": result.Status})
 }
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
@@ -560,6 +647,16 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.createUser(w, r, u)
+	case r.Method == "PUT" && strings.HasPrefix(path, "users/") && strings.HasSuffix(path, "/password"):
+		if !permit(w, u, "user.password.update") {
+			return
+		}
+		parts := strings.Split(path, "/")
+		if len(parts) != 3 || parts[1] == "" || parts[2] != "password" {
+			problem(w, 404, "not_found", "endpoint not found")
+			return
+		}
+		s.updateUserPassword(w, r, u, parts[1])
 	case r.Method == "DELETE" && strings.HasPrefix(path, "users/"):
 		if !permit(w, u, "user.delete") {
 			return
@@ -647,6 +744,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		write(w, 200, map[string]any{"uptime_seconds": int(time.Since(s.started).Seconds()), "devices": len(ds), "users": len(us), "online_devices": online, "offline_devices": len(ds) - online, "active_commands": active, "adapter_name": s.adapterName, "adapter_address": s.adapterAddress, "adapter_ready": s.adapterName != "", "ping_interval_seconds": int(s.pingInterval().Seconds())})
+	case r.Method == "GET" && path == "network/flows":
+		if !permit(w, u, "network.flow.view") {
+			return
+		}
+		s.networkFlows(w, r)
 	case r.Method == "GET" && path == "commands":
 		if !permit(w, u, "device.view") {
 			return
@@ -671,6 +773,37 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		problem(w, 404, "not_found", "endpoint not found")
 	}
 }
+
+type networkNode struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	IP       string `json:"ip"`
+	Kind     string `json:"kind"`
+	Online   bool   `json:"online"`
+	Platform string `json:"platform,omitempty"`
+}
+
+type networkFlowResponse struct {
+	routing.TrafficSnapshot
+	Nodes []networkNode `json:"nodes"`
+}
+
+func (s *Server) networkFlows(w http.ResponseWriter, r *http.Request) {
+	devices, err := s.store.ListDevices(r.Context())
+	if err != nil {
+		problem(w, 500, "network_flows_failed", "network flow data could not be loaded")
+		return
+	}
+	serverIP := strings.SplitN(s.adapterAddress, "/", 2)[0]
+	nodes := []networkNode{{ID: "server", Name: "TyxNet Server", IP: serverIP, Kind: "server", Online: true}}
+	for _, device := range devices {
+		if device.Revoked {
+			continue
+		}
+		nodes = append(nodes, networkNode{ID: device.ID, Name: device.Name, IP: device.VirtualIP, Kind: "device", Online: s.deviceOnline(device.ID), Platform: device.OS + " / " + device.Arch})
+	}
+	write(w, 200, networkFlowResponse{TrafficSnapshot: s.traffic.Snapshot(), Nodes: nodes})
+}
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request, actor storage.User) {
 	var in struct{ Username, Password, Role string }
 	if decode(r, &in) != nil {
@@ -689,6 +822,30 @@ func (s *Server) createUser(w http.ResponseWriter, r *http.Request, actor storag
 	}
 	s.store.Audit(r.Context(), actor.ID, "user.create", u.ID, r.RemoteAddr, "")
 	write(w, 201, u)
+}
+func (s *Server) updateUserPassword(w http.ResponseWriter, r *http.Request, actor storage.User, userID string) {
+	var in struct {
+		Password string `json:"password"`
+	}
+	if decode(r, &in) != nil {
+		problem(w, 400, "invalid_request", "invalid JSON")
+		return
+	}
+	passwordHash, err := auth.HashPassword(in.Password)
+	if err != nil {
+		problem(w, 400, "invalid_password", err.Error())
+		return
+	}
+	if err = s.store.UpdateUserPassword(r.Context(), userID, passwordHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			problem(w, 404, "user_not_found", "user not found")
+			return
+		}
+		problem(w, 500, "password_update_failed", "password could not be updated")
+		return
+	}
+	s.store.Audit(r.Context(), actor.ID, "user.password.update", userID, r.RemoteAddr, "sessions revoked")
+	write(w, 200, map[string]string{"status": "updated"})
 }
 func (s *Server) createToken(w http.ResponseWriter, r *http.Request, u storage.User) {
 	var in struct {
@@ -736,6 +893,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request, u storage.User,
 		return
 	}
 	s.store.Audit(r.Context(), u.ID, typ, parts[1], r.RemoteAddr, "")
+	s.notifyCommand(parts[1])
 	write(w, 202, c)
 }
 func respond(w http.ResponseWriter, v any, err error) {

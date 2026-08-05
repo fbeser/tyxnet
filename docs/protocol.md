@@ -40,6 +40,21 @@ IP change can be applied without reenrollment. A v1 client must ignore unknown J
 this permits additive fields without a version change. Removing or changing the
 meaning or type of an existing field requires a new control endpoint version.
 
+The stream can also emit an additive `command` event containing
+`protocol_version`, command ID, an allowlisted type, creation time, and expiry.
+Older v1 clients ignore this event, so adding it does not change the protocol
+version. The server may redeliver `queued` or `delivered` commands until the
+target reports `accepted`. A client records the ID before execution and never
+executes a duplicate during that process lifetime. `accepted` is the at-most-once
+boundary; terminal states are `succeeded` and `failed`, while commands that are
+not accepted before their two-minute deadline become `expired`.
+
+Command results use a fresh one-use device challenge. The Ed25519 signing input
+is the ASCII domain `tyxnet-command-result-v1`, a zero byte, the 32-byte nonce,
+then unsigned-16-bit big-endian length-prefixed device ID, command ID, status,
+result, and error strings. This binds every result to its endpoint purpose and
+prevents a connect proof or result for another command from being replayed.
+
 ## Packet protection
 
 DATA and control payloads use ChaCha20-Poly1305. Header bytes are AAD. Nonces are

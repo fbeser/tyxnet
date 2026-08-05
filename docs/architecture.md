@@ -20,6 +20,10 @@ sequenceDiagram
 
 The UDP data-plane integration is not complete. `routing.Router` already enforces
 that an IPv4 source equals the peer's assigned address and drops unknown targets.
+Successfully routed packets feed a payload-blind observer that retains source
+and destination virtual IPs, byte counts, and packet counts in one-second memory
+buckets for 60 seconds. The management API derives five-second Mbps rates and a
+60-second time series from those buckets. Rejected packets are never counted.
 `tunnel.Memory` permits rootless integration tests. Server and client adapters
 use Linux `/dev/net/tun`, Windows Wintun, or kernel-assigned macOS `utunN`
 devices. A client derives a stable adapter identity from its server URL, keeping
@@ -31,9 +35,18 @@ current Darwin command-line client uses a development utun integration; a
 production Network Extension remains incomplete.
 
 The server management console is a no-build HTML/CSS/JavaScript application
-embedded in the Go binary. It uses the same bearer-authenticated `/api/v1`
-surface as `tyxnetctl`. First-user web setup is available on the LAN by default
-and can be restricted to loopback with `--local-web`.
+embedded in the Go binary. It includes a device topology, directional flow map,
+and SVG throughput chart backed by the same bearer-authenticated `/api/v1`
+surface as `tyxnetctl`. Until the UDP data plane is connected, the panel reports
+its inactive state rather than displaying synthetic traffic. First-user web
+setup is available on the LAN by default and can be restricted to loopback with
+`--local-web`.
+
+The same authenticated SSE control connection delivers short-lived allowlisted
+commands. SQLite owns the delivery state machine, clients cross an explicit
+`accepted` boundary before executing a fixed platform action, and a separate
+fresh-challenge Ed25519 proof authenticates each result. This keeps arbitrary
+command text out of both the wire format and operating-system execution path.
 
 The client embeds a separate no-build web console. An unconfigured client waits
 for enrollment details submitted to its local setup API, stores its identity and

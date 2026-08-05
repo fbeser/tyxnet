@@ -170,12 +170,13 @@ sudo journalctl -u tyxnet-server -f
 | Users, roles, sessions, enrollment tokens, devices, and audit events | Working |
 | Ed25519 enrollment and challenge-authenticated control connection | Working |
 | Reconnect, heartbeat, device presence, and role-scoped views | Working |
+| Network-flow topology and 60-second traffic dashboard | UI/API ready; awaiting data plane |
 | Linux TUN, Windows Wintun, and macOS utun adapter creation | Experimental |
 | Windows tray and macOS menu-bar companions | Experimental |
 | Native Linux systemd installation | Working |
 | Multiarch Docker image and Compose deployment | Working |
 | UDP packet data plane and virtual-IP traffic | Not complete |
-| Remote command delivery and result reporting | Not complete |
+| Authenticated remote reconnect, restart, shutdown, and result reporting | Working |
 | Signed/notarized desktop distribution | Not complete |
 | Mobile clients, P2P, STUN, and hole punching | Planned |
 
@@ -192,6 +193,7 @@ component.
 - X25519, HKDF-SHA256, ChaCha20-Poly1305, and replay-window primitives
 - Argon2id passwords and one-way hashes for random tokens
 - Virtual source-IP validation and central routing policy
+- Live network topology, per-flow Mbps, packet totals, and 60-second throughput charts
 - Windows Wintun, Linux TUN, and macOS utun platform adapters
 - Windows notification-area and macOS menu-bar companions
 - Strict enum-based remote command allowlist with no server-provided shell text
@@ -294,7 +296,12 @@ See [Windows client notes](docs/windows-client.md).
 
 The server dashboard provides setup, login, overview counters, device rename and
 revoke, persistent virtual-IP assignment, command actions, user and role
-management, token management, command history, server settings, and audit logs.
+management, administrator password resets, token management, command history,
+server settings, network-flow telemetry, and audit logs. The flow panel shows
+device-to-device direction, current Mbps, packet totals, and a 60-second chart;
+it remains at zero until the encrypted UDP packet data plane is connected.
+Resetting a password signs out every existing session for that user; the new
+password must contain at least 12 characters.
 
 | Role | Devices visible to clients | Client controls |
 |---|---|---|
@@ -303,8 +310,16 @@ management, token management, command history, server settings, and audit logs.
 | Viewer | All devices | View only |
 | Member | Devices owned by that user | View only |
 
-Commands are safely queued through an enum allowlist, but end-to-end client
-delivery and result reporting are not complete in `v0.1.x`.
+Admins, operators, and viewers can view flow metadata. Members cannot access the
+cross-device flow panel. Traffic payloads, ports, and protocol contents are not
+stored; live counters remain only in server memory for 60 seconds.
+
+Reconnect, restart, and shutdown commands are delivered over the authenticated
+control stream and tracked as queued, delivered, accepted, succeeded, failed, or
+expired. Clients accept only fixed allowlisted actions: Windows uses
+`shutdown.exe`, Linux uses `systemctl`, and macOS uses `/sbin/shutdown`. The
+client service must run with the operating-system privileges required by those
+commands. No server-provided text is passed to a shell.
 
 ## CLI
 

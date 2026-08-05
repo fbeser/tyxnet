@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 )
@@ -138,6 +140,72 @@ func TestCommandAllowlist(t *testing.T) {
 		t.Fatal("arbitrary command accepted")
 	}
 }
+func TestCommandDeliveryLifecycle(t *testing.T) {
+	ctx := context.Background()
+	s := setup(t)
+	admin, _ := s.CreateAdmin(ctx, "admin", "hash")
+	_, enrollment, _ := s.CreateEnrollmentToken(ctx, admin.ID, time.Hour, 1)
+	device, err := s.JoinDevice(ctx, enrollment, "device", "linux", "arm64", "dev", "10.90.0.0/24", []byte("key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := s.CreateCommand(ctx, admin.ID, device.ID, "system.restart", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.PendingCommandsForDevice(ctx, device.ID, 10)
+	if err != nil || len(pending) != 1 || pending[0].ID != command.ID {
+		t.Fatalf("pending commands: %+v %v", pending, err)
+	}
+	if err = s.MarkCommandDelivered(ctx, command.ID, device.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.UpdateCommandResult(ctx, command.ID, device.ID, "accepted", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if pending, err = s.PendingCommandsForDevice(ctx, device.ID, 10); err != nil || len(pending) != 0 {
+		t.Fatalf("accepted command remained pending: %+v %v", pending, err)
+	}
+	if err = s.UpdateCommandResult(ctx, command.ID, device.ID, "succeeded", "system action scheduled", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.UpdateCommandResult(ctx, command.ID, device.ID, "succeeded", "system action scheduled", ""); err != nil {
+		t.Fatalf("idempotent result failed: %v", err)
+	}
+	if err = s.UpdateCommandResult(ctx, command.ID, device.ID, "failed", "", "late failure"); err == nil {
+		t.Fatal("invalid terminal status transition was accepted")
+	}
+	commands, err := s.ListCommands(ctx, 10)
+	if err != nil || len(commands) != 1 || commands[0].Status != "succeeded" || commands[0].Result != "system action scheduled" {
+		t.Fatalf("completed command: %+v %v", commands, err)
+	}
+}
+
+func TestExpiredAndRevokedDeviceCommandsAreRejected(t *testing.T) {
+	ctx := context.Background()
+	s := setup(t)
+	admin, _ := s.CreateAdmin(ctx, "admin", "hash")
+	_, enrollment, _ := s.CreateEnrollmentToken(ctx, admin.ID, time.Hour, 1)
+	device, _ := s.JoinDevice(ctx, enrollment, "device", "linux", "arm64", "dev", "10.90.0.0/24", []byte("key"))
+	command, err := s.CreateCommand(ctx, admin.ID, device.ID, "system.shutdown", time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if pending, pendingErr := s.PendingCommandsForDevice(ctx, device.ID, 10); pendingErr != nil || len(pending) != 0 {
+		t.Fatalf("expired command was delivered: %+v %v", pending, pendingErr)
+	}
+	commands, _ := s.ListCommands(ctx, 10)
+	if len(commands) != 1 || commands[0].ID != command.ID || commands[0].Status != "expired" {
+		t.Fatalf("expired command status: %+v", commands)
+	}
+	if err = s.RevokeDevice(ctx, device.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateCommand(ctx, admin.ID, device.ID, "system.restart", time.Minute); err == nil {
+		t.Fatal("command was queued for a revoked device")
+	}
+}
 func TestInitialAdminCanOnlyBeCreatedOnce(t *testing.T) {
 	ctx := context.Background()
 	s := setup(t)
@@ -170,5 +238,31 @@ func TestManagementListsAndUpdates(t *testing.T) {
 	logs, err := s.ListAudit(ctx, 10)
 	if err != nil || len(logs) != 1 {
 		t.Fatalf("audit=%d %v", len(logs), err)
+	}
+}
+
+func TestUpdateUserPasswordRevokesSessions(t *testing.T) {
+	ctx := context.Background()
+	s := setup(t)
+	user, err := s.CreateAdmin(ctx, "admin", "old-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := s.CreateSession(ctx, user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.UpdateUserPassword(ctx, user.ID, "new-hash"); err != nil {
+		t.Fatal(err)
+	}
+	_, passwordHash, err := s.Authenticate(ctx, user.Username)
+	if err != nil || passwordHash != "new-hash" {
+		t.Fatalf("password hash was not updated: %q %v", passwordHash, err)
+	}
+	if _, err = s.SessionUser(ctx, session); err == nil {
+		t.Fatal("existing session remained valid after password update")
+	}
+	if err = s.UpdateUserPassword(ctx, "missing-user", "hash"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("missing user error = %v, want sql.ErrNoRows", err)
 	}
 }

@@ -3,8 +3,12 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +17,7 @@ import (
 	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/auth"
 	"github.com/fbeser/tyxnet/internal/storage"
+	"github.com/fbeser/tyxnet/pkg/protocol"
 )
 
 func TestAPIAuthorizationAndLogin(t *testing.T) {
@@ -171,6 +176,69 @@ func TestLocalWebBootstrap(t *testing.T) {
 	}
 }
 
+func TestAdminUpdatesUserPassword(t *testing.T) {
+	ctx := context.Background()
+	st, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	adminHash, _ := auth.HashPassword("admin-secure-password")
+	viewerHash, _ := auth.HashPassword("viewer-old-password")
+	admin, err := st.CreateInitialAdmin(ctx, "admin", adminHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := st.CreateUser(ctx, "viewer", viewerHash, "viewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminSession, _ := st.CreateSession(ctx, admin.ID, time.Hour)
+	viewerSession, _ := st.CreateSession(ctx, viewer.ID, time.Hour)
+	h := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true).Handler()
+
+	request := func(token, userID, password string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]string{"password": password})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPut, "/api/v1/users/"+userID+"/password", bytes.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+
+	if w := request(viewerSession, viewer.ID, "viewer-new-password"); w.Code != http.StatusForbidden {
+		t.Fatalf("viewer password update: %d %s", w.Code, w.Body.String())
+	}
+	if w := request(adminSession, viewer.ID, "too-short"); w.Code != http.StatusBadRequest {
+		t.Fatalf("short password update: %d %s", w.Code, w.Body.String())
+	}
+	_, unchangedHash, err := st.Authenticate(ctx, viewer.Username)
+	if err != nil || !auth.VerifyPassword(unchangedHash, "viewer-old-password") {
+		t.Fatalf("invalid update changed password: %v", err)
+	}
+	if w := request(adminSession, viewer.ID, "viewer-new-password"); w.Code != http.StatusOK {
+		t.Fatalf("admin password update: %d %s", w.Code, w.Body.String())
+	}
+	_, changedHash, err := st.Authenticate(ctx, viewer.Username)
+	if err != nil || auth.VerifyPassword(changedHash, "viewer-old-password") || !auth.VerifyPassword(changedHash, "viewer-new-password") {
+		t.Fatalf("password verification after update failed: %v", err)
+	}
+	if _, err = st.SessionUser(ctx, viewerSession); err == nil {
+		t.Fatal("password update did not revoke the viewer session")
+	}
+	if w := request(adminSession, "missing-user", "missing-new-password"); w.Code != http.StatusNotFound {
+		t.Fatalf("missing user password update: %d %s", w.Code, w.Body.String())
+	}
+	logs, err := st.ListAudit(ctx, 10)
+	if err != nil || len(logs) != 1 || logs[0].Action != "user.password.update" || logs[0].TargetID != viewer.ID {
+		t.Fatalf("password audit entry: %+v %v", logs, err)
+	}
+}
+
 func TestWebBootstrapRejectsRemoteRequests(t *testing.T) {
 	st, err := storage.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -232,6 +300,146 @@ func TestMemberOnlySeesOwnedDevices(t *testing.T) {
 	}
 }
 
+func TestNetworkFlowsExposeRoutedMetadataByRole(t *testing.T) {
+	ctx := context.Background()
+	st, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	admin, _ := st.CreateInitialAdmin(ctx, "admin", "hash")
+	member, _ := st.CreateUser(ctx, "member", "hash", "member")
+	deviceIDs := make([]string, 0, 2)
+	for _, owner := range []storage.User{admin, member} {
+		_, enrollment, createErr := st.CreateEnrollmentToken(ctx, owner.ID, time.Hour, 1)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		device, joinErr := st.JoinDevice(ctx, enrollment, owner.Username+"-device", "linux", "arm64", "dev", "10.90.0.0/24", []byte("key"))
+		if joinErr != nil {
+			t.Fatal(joinErr)
+		}
+		deviceIDs = append(deviceIDs, device.VirtualIP)
+	}
+	adminSession, _ := st.CreateSession(ctx, admin.ID, time.Hour)
+	memberSession, _ := st.CreateSession(ctx, member.ID, time.Hour)
+	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	server.SetAdapter("TyxNet", "10.90.0.1/24")
+	server.TrafficMonitor().SetReady(true)
+	server.TrafficMonitor().Observe(net.ParseIP(deviceIDs[0]), net.ParseIP(deviceIDs[1]), 1_000_000)
+	h := server.Handler()
+
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/network/flows", nil)
+	r.Header.Set("Authorization", "Bearer "+adminSession)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"data_plane_ready":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"admin-device"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"mbps":1.6`)) {
+		t.Fatalf("network flows: %d %s", w.Code, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/network/flows", nil)
+	r.Header.Set("Authorization", "Bearer "+memberSession)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("member network flows: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCommandDeliveryAndAuthenticatedResults(t *testing.T) {
+	ctx := context.Background()
+	st, err := storage.Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	admin, _ := st.CreateInitialAdmin(ctx, "admin", "hash")
+	publicKey, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	_, enrollment, _ := st.CreateEnrollmentToken(ctx, admin.ID, time.Hour, 1)
+	device, err := st.JoinDevice(ctx, enrollment, "laptop", "darwin", "arm64", "dev", "10.90.0.0/24", publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := st.CreateCommand(ctx, admin.ID, device.ID, "system.restart", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	var stream bytes.Buffer
+	if err = server.writePendingCommands(ctx, &stream, device.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(stream.Bytes(), []byte("event: command")) || !bytes.Contains(stream.Bytes(), []byte(command.ID)) || !bytes.Contains(stream.Bytes(), []byte("system.restart")) {
+		t.Fatalf("command event: %s", stream.String())
+	}
+	commands, _ := st.ListCommands(ctx, 10)
+	if len(commands) != 1 || commands[0].Status != "delivered" {
+		t.Fatalf("delivered status: %+v", commands)
+	}
+	h := server.Handler()
+	challenge := func() []byte {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/control/v1/challenge", bytes.NewBufferString(`{"device_id":"`+device.ID+`"}`))
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("challenge: %d %s", response.Code, response.Body.String())
+		}
+		var body struct {
+			Challenge string `json:"challenge"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		nonce, decodeErr := base64.RawStdEncoding.DecodeString(body.Challenge)
+		if decodeErr != nil {
+			t.Fatal(decodeErr)
+		}
+		return nonce
+	}
+	report := func(status, resultText, errorText string, signature []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		body, marshalErr := json.Marshal(protocol.CommandResult{DeviceID: device.ID, Status: status, Result: resultText, Error: errorText, Signature: base64.RawStdEncoding.EncodeToString(signature)})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/control/v1/commands/"+command.ID+"/result", bytes.NewReader(body))
+		response := httptest.NewRecorder()
+		h.ServeHTTP(response, request)
+		return response
+	}
+
+	_ = challenge()
+	if response := report("accepted", "", "", make([]byte, ed25519.SignatureSize)); response.Code != http.StatusForbidden {
+		t.Fatalf("forged command result: %d %s", response.Code, response.Body.String())
+	}
+	for _, update := range []struct {
+		status string
+		result string
+	}{
+		{status: "accepted"},
+		{status: "succeeded", result: "system action scheduled"},
+	} {
+		nonce := challenge()
+		payload, payloadErr := protocol.CommandResultSigningPayload(nonce, device.ID, command.ID, update.status, update.result, "")
+		if payloadErr != nil {
+			t.Fatal(payloadErr)
+		}
+		if response := report(update.status, update.result, "", ed25519.Sign(privateKey, payload)); response.Code != http.StatusOK {
+			t.Fatalf("%s result: %d %s", update.status, response.Code, response.Body.String())
+		}
+		if update.status == "accepted" {
+			if response := report(update.status, update.result, "", ed25519.Sign(privateKey, payload)); response.Code != http.StatusForbidden {
+				t.Fatalf("replayed result proof: %d %s", response.Code, response.Body.String())
+			}
+		}
+	}
+	commands, _ = st.ListCommands(ctx, 10)
+	if len(commands) != 1 || commands[0].Status != "succeeded" || commands[0].Result != "system action scheduled" {
+		t.Fatalf("final command state: %+v", commands)
+	}
+}
+
 func TestEmbeddedConsoleAssets(t *testing.T) {
 	st, err := storage.Open(context.Background(), ":memory:")
 	if err != nil {
@@ -252,6 +460,15 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if !bytes.Contains(w.Body.Bytes(), []byte("[hidden]{display:none!important}")) {
 		t.Fatal("hidden visibility guard is missing")
+	}
+	r = httptest.NewRequest("GET", "/ui/app.js", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !bytes.Contains(w.Body.Bytes(), []byte("Change password")) {
+		t.Fatal("password update action is missing")
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("Network flows")) || !bytes.Contains(w.Body.Bytes(), []byte("renderFlowMap")) {
+		t.Fatal("network flow panel is missing")
 	}
 }
 
