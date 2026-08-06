@@ -24,7 +24,7 @@ for arch in amd64 arm64; do
 done
 rm -f dist/checksums.txt
 if command -v sha256sum >/dev/null 2>&1; then
-  (cd dist && sha256sum * > checksums.txt)
+  (cd dist && find . -maxdepth 1 -type f ! -name checksums.txt -exec sha256sum {} \; > checksums.txt)
 else
-  (cd dist && shasum -a 256 * > checksums.txt)
+  (cd dist && find . -maxdepth 1 -type f ! -name checksums.txt -exec shasum -a 256 {} \; > checksums.txt)
 fi
