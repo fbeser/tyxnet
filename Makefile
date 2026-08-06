@@ -1,6 +1,7 @@
-.PHONY: build build-server build-client build-tray build-server-tray build-cli test test-race test-docker vet lint fmt web docker clean release package-windows package-macos
+.PHONY: build build-server build-client build-tray build-server-tray build-cli test test-race test-docker vet lint fmt web docker clean release release-full package-windows package-macos
 GO ?= go
 BIN := bin
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
 
 build: build-server build-client build-tray build-server-tray build-cli
 $(BIN):
@@ -35,8 +36,9 @@ clean:
 	$(GO) clean
 	rm -rf $(BIN) dist
 release:
-	sh scripts/release.sh
+	sh scripts/release.sh $(VERSION)
+release-full: release package-macos package-windows
 package-windows:
-	sh scripts/package-windows.sh
+	sh scripts/package-windows.sh $(VERSION)
 package-macos:
-	sh scripts/package-macos.sh
+	sh scripts/package-macos.sh $(VERSION)

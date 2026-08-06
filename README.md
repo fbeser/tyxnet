@@ -374,6 +374,10 @@ For trusted-LAN installs, open `http://SERVER_IP:8443` and complete the setup
 form. To create the administrator from the CLI without placing the password in
 process arguments:
 
+The setup card, login card, and management sidebar display the running TyxNet
+version so operators can confirm the active build before creating the first
+administrator.
+
 ```bash
 printf '%s\n' 'a-strong-password' | sudo tyxnet-server admin create \
   --config /etc/tyxnet/server.yaml \
@@ -557,8 +561,15 @@ Useful targets:
 | `make vet` | Run `go vet` |
 | `make lint` | Run `golangci-lint` |
 | `make release` | Cross-build release binaries and checksums |
+| `make release-full` | Build all release binaries plus macOS DMG and Windows MSI |
 | `make package-macos` | Build the universal DMG on macOS |
 | `make package-windows` | Build the x64 MSI with `wixl` |
+
+Release targets accept `VERSION`, for example:
+
+```bash
+make release-full VERSION=0.3.8
+```
 
 ## Release verification
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TyxNet API
-  version: 0.3.3
+  version: 0.3.8
   description: Experimental management, enrollment and device-control API.
 servers:
   - url: https://vpn.example.com
@@ -94,7 +94,7 @@ paths:
   /api/v1/auth/me:
     get: {security: [{bearerAuth: []}], responses: {'200': {description: Current user}}}
   /api/v1/setup/status:
-    get: {description: Reports whether first-user setup is required and enabled for this request, responses: {'200': {description: Setup state}}}
+    get: {description: Reports whether first-user setup is required and enabled for this request and returns the running server version, responses: {'200': {description: Setup state plus running version}}}
   /api/v1/setup:
     post: {description: Creates the first administrator on loopback or an explicitly enabled trusted-LAN listener and returns a bearer session, responses: {'201': {description: Administrator created}, '403': {description: Web setup disabled}, '409': {description: Setup already complete}}}
   /api/v1/enroll:
@@ -160,7 +160,7 @@ paths:
       parameters: [{in: path, name: id, required: true, schema: {type: string}}]
       responses: {'204': {description: Revoked}}
   /api/v1/server/status:
-    get: {security: [{bearerAuth: []}], responses: {'200': {description: Status counters and virtual-adapter readiness, name, and address}}}
+    get: {security: [{bearerAuth: []}], responses: {'200': {description: Status counters, virtual-adapter readiness, and running server version}}}
   /api/v1/network/flows:
     get:
       description: Returns the visible device topology plus payload-blind, in-memory packet counts, byte counts, five-second Mbps rates, and a 60-second series. Admin, operator, and viewer roles are allowed; member is denied. Data remains empty while the UDP data plane is inactive.
