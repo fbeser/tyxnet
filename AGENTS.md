@@ -108,10 +108,15 @@ Verify the GitHub Release contains every local artifact and its checksum file.
 
 GitHub Releases and GHCR images are independent products. A GitHub Release does
 not update CasaOS, which pulls `ghcr.io/fbeser/tyxnet:latest`. If a container
-image is needed, build and publish it deliberately with the release version
-passed as the Docker `VERSION` build argument; never rely on the `dev` fallback.
-The setup and server-status APIs expose `buildinfo.Version`, and the embedded
-console renders that exact value.
+image is needed, publish it from the local release machine after the GitHub
+Release. Authenticate with `gh auth refresh --scopes write:packages`, create a
+`docker-container` Buildx builder when necessary, then build and push both
+`ghcr.io/fbeser/tyxnet:<version>` and `ghcr.io/fbeser/tyxnet:latest` for
+`linux/amd64,linux/arm64`, passing `--build-arg VERSION=<version>`. Verify both
+tags resolve to the same multi-platform manifest and inspect the published ARM64
+binary for the embedded version before asking CasaOS to redeploy. Never rely on
+the `dev` fallback. The setup and server-status APIs expose `buildinfo.Version`,
+and the embedded console renders that exact value.
 
 Commits should be focused and imperative. PRs describe risk, tests, migrations,
 API/protocol effects, docs and rollback. Preserve unrelated user changes.
