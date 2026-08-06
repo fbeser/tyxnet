@@ -1,17 +1,20 @@
 FROM --platform=$BUILDPLATFORM golang:1.26.5-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /tyxnet-server ./cmd/tyxnet-server
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w -X github.com/fbeser/tyxnet/internal/buildinfo.Version=$VERSION" -o /tyxnet-server ./cmd/tyxnet-server
 
 FROM caddy:2-alpine AS caddy
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates iproute2 && mkdir -p /var/lib/tyxnet
-ENV TYXNET_CONTAINER=1
+ENV TYXNET_CONTAINER=1 \
+	XDG_DATA_HOME=/data \
+	XDG_CONFIG_HOME=/config
 COPY --from=build /tyxnet-server /usr/local/bin/tyxnet-server
 COPY --from=caddy /usr/bin/caddy /usr/local/bin/caddy
 COPY configs/server.docker.yaml /etc/tyxnet/server.yaml
