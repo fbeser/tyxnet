@@ -274,7 +274,11 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		problem(w, 403, "setup_disabled", "initial web setup is not enabled for this request")
 		return
 	}
-	var in struct{ Username, Password string }
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Remember bool   `json:"remember,omitempty"`
+	}
 	if decode(r, &in) != nil || strings.TrimSpace(in.Username) == "" {
 		problem(w, 400, "invalid_request", "username and password are required")
 		return
