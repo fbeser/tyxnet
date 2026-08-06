@@ -279,7 +279,7 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Remember bool   `json:"remember,omitempty"`
 	}
-	if decode(r, &in) != nil || strings.TrimSpace(in.Username) == "" {
+	if decodeLenient(r, &in) != nil || strings.TrimSpace(in.Username) == "" {
 		problem(w, 400, "invalid_request", "username and password are required")
 		return
 	}
@@ -339,6 +339,17 @@ func (s *Server) rateLimit(next http.Handler) http.Handler {
 func decode(r *http.Request, v any) error {
 	d := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	d.DisallowUnknownFields()
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	if err := d.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("request must contain one JSON value")
+	}
+	return nil
+}
+
+func decodeLenient(r *http.Request, v any) error {
+	d := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
 	if err := d.Decode(v); err != nil {
 		return err
 	}

@@ -166,13 +166,13 @@ func TestLocalWebBootstrap(t *testing.T) {
 		t.Fatalf("setup response: %v %s", err, w.Body.String())
 	}
 
-	body = bytes.NewBufferString(`{"Username":"second-admin","Password":"a-secure-password","Remember":false}`)
+	body = bytes.NewBufferString(`{"Username":"second-admin","Password":"a-secure-password","Remember":false,"Confirm":"a-secure-password"}`)
 	r = httptest.NewRequest("POST", "/api/v1/setup", body)
 	r.RemoteAddr = "127.0.0.1:50000"
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusConflict {
-		t.Fatalf("setup with remember field: %d %s", w.Code, w.Body.String())
+		t.Fatalf("setup with extra fields: %d %s", w.Code, w.Body.String())
 	}
 
 	body = bytes.NewBufferString(`{"Username":"viewer","Password":"another-secure-password","Role":"viewer"}`)
