@@ -1,3 +1,4 @@
 package buildinfo
 
-var Version = "dev"
+// Version is replaced by release build metadata when available.
+var Version = "0.3.11"

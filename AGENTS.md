@@ -97,11 +97,21 @@ TODOs must state what is missing, why, and the completion condition. Do not call
 unfinished work complete. New dependencies need a maintenance/security/license
 case; run vulnerability and third-party license checks and update notices.
 
-For releases, update every user-facing version example and packaging-script
-default together. Run the full quality gate, `scripts/release.sh <version>`, and
-the supported installer builders before tagging. Tags are `vMAJOR.MINOR.PATCH`;
-their GitHub workflow publishes cross-platform binaries and multi-architecture
-GHCR images. Release checksums must cover every uploaded binary and installer.
+For releases, update every user-facing version example, `internal/buildinfo.Version`
+fallback, and packaging-script default together. Run the full quality gate,
+`scripts/release.sh <version>`, and the supported installer builders before
+tagging. Tags are `vMAJOR.MINOR.PATCH`. Standard releases are published locally:
+commit and push `main`, build artifacts locally, create and push the annotated
+tag, then use `gh release create v<version> dist/*`. Do not use GitHub Actions
+for release artifact publishing; tag pushes must not trigger a release workflow.
+Verify the GitHub Release contains every local artifact and its checksum file.
+
+GitHub Releases and GHCR images are independent products. A GitHub Release does
+not update CasaOS, which pulls `ghcr.io/fbeser/tyxnet:latest`. If a container
+image is needed, build and publish it deliberately with the release version
+passed as the Docker `VERSION` build argument; never rely on the `dev` fallback.
+The setup and server-status APIs expose `buildinfo.Version`, and the embedded
+console renders that exact value.
 
 Commits should be focused and imperative. PRs describe risk, tests, migrations,
 API/protocol effects, docs and rollback. Preserve unrelated user changes.
