@@ -146,7 +146,7 @@ func TestLocalWebBootstrap(t *testing.T) {
 	r.RemoteAddr = "127.0.0.1:50000"
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
-	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"required":true`)) {
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"required":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"version":`)) {
 		t.Fatalf("status: %d %s", w.Code, w.Body.String())
 	}
 

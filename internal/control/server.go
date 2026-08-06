@@ -23,6 +23,7 @@ import (
 
 	"github.com/fbeser/tyxnet/internal/application"
 	"github.com/fbeser/tyxnet/internal/auth"
+	"github.com/fbeser/tyxnet/internal/buildinfo"
 	"github.com/fbeser/tyxnet/internal/dataplane"
 	"github.com/fbeser/tyxnet/internal/routing"
 	"github.com/fbeser/tyxnet/internal/storage"
@@ -267,7 +268,7 @@ func (s *Server) setupStatus(w http.ResponseWriter, r *http.Request) {
 		problem(w, 500, "internal", "setup status failed")
 		return
 	}
-	write(w, 200, map[string]any{"required": n == 0, "enabled": s.bootstrapAllowed(r)})
+	write(w, 200, map[string]any{"required": n == 0, "enabled": s.bootstrapAllowed(r), "version": buildinfo.Version})
 }
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	if !s.bootstrapAllowed(r) {
@@ -279,7 +280,11 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Remember bool   `json:"remember,omitempty"`
 	}
-	if decodeLenient(r, &in) != nil || strings.TrimSpace(in.Username) == "" {
+	if err := decodeLenient(r, &in); err != nil {
+		problem(w, 400, "invalid_request", "invalid setup request payload")
+		return
+	}
+	if strings.TrimSpace(in.Username) == "" {
 		problem(w, 400, "invalid_request", "username and password are required")
 		return
 	}
@@ -829,7 +834,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 				active++
 			}
 		}
-		write(w, 200, map[string]any{"uptime_seconds": int(time.Since(s.started).Seconds()), "devices": len(ds), "users": len(us), "online_devices": online, "offline_devices": len(ds) - online, "active_commands": active, "adapter_name": s.adapterName, "adapter_address": s.adapterAddress, "adapter_ready": s.adapterName != "", "ping_interval_seconds": int(s.pingInterval().Seconds())})
+		write(w, 200, map[string]any{"uptime_seconds": int(time.Since(s.started).Seconds()), "devices": len(ds), "users": len(us), "online_devices": online, "offline_devices": len(ds) - online, "active_commands": active, "adapter_name": s.adapterName, "adapter_address": s.adapterAddress, "adapter_ready": s.adapterName != "", "ping_interval_seconds": int(s.pingInterval().Seconds()), "version": buildinfo.Version})
 	case r.Method == "GET" && path == "network/flows":
 		if !permit(w, u, "network.flow.view") {
 			return
