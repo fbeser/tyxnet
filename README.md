@@ -76,7 +76,7 @@ loop. Do not forward TCP 8443, 18080, or 18443 from the modem in this mode.
 
 Leave the remaining port values unchanged unless they conflict with another
 service. `TYXNET_VERSION=latest` follows new releases; use a version such as
-`0.3.4` to pin the deployment.
+`0.3.12` to pin the deployment.
 
 Start everything with current Compose:
 
@@ -278,8 +278,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.4/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.4/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.12/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.12/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 
@@ -568,7 +568,7 @@ Useful targets:
 Release targets accept `VERSION`, for example:
 
 ```bash
-make release-full VERSION=0.3.8
+make release-full VERSION=0.3.12
 ```
 
 ## Release verification
@@ -579,8 +579,9 @@ Every GitHub release includes `checksums.txt`:
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 ```
 
-Tags matching `v*` create release binaries and publish versioned GHCR images.
-The `latest` container tag is also updated for `linux/amd64` and `linux/arm64`.
+Release binaries and GHCR images are built and published from the local release
+machine; GitHub Actions is not used for release publishing. Versioned and
+`latest` container tags are published for `linux/amd64` and `linux/arm64`.
 
 ## Documentation
 

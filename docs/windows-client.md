@@ -23,7 +23,7 @@ The Wintun adapter exchanges virtual IPv4 packets through the authenticated,
 encrypted UDP data plane after HTTPS control authentication.
 **Run at startup** installs an elevated logon task without recurring UAC prompts,
 and **Quit TyxNet** stops the client as well as the tray. On macOS,
-`sh scripts/package-windows.sh 0.3.3` creates an unsigned x64 MSI using `wixl`.
+`sh scripts/package-windows.sh 0.3.12` creates an unsigned x64 MSI using `wixl`.
 Authenticode signing, native Windows Service integration, and installer-managed
 firewall rules remain planned.
 
