@@ -12,10 +12,12 @@ The release pipeline cross-compiles the command-line binaries. Enrollment,
 identity storage, authenticated control connections, reconnect behavior, and the
 LAN-accessible web console are portable Go code. The development client creates
 its utun after receiving the authoritative virtual network and forwards IPv4
-packets through the encrypted UDP data plane.
+packets through the encrypted UDP data plane. The privileged client installs the
+server-authoritative virtual IPv4 network route on that utun; macOS removes the
+route when the process-scoped interface closes.
 
 `tyxnet-tray` builds natively on macOS with Cocoa and places the same role-aware
-device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.3.12` creates
+device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.3.13` creates
 an ad-hoc-signed universal DMG for local testing. Public distribution still
 requires a Developer ID signature and Apple notarization.
 

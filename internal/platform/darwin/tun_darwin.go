@@ -15,20 +15,26 @@ import (
 
 type Factory struct{}
 
+type fixedCommand struct {
+	path string
+	args []string
+}
+
 func (Factory) Open(_ context.Context, _ string, mtu int) (tunnel.Device, error) {
 	return tunnel.OpenNative("utun", mtu)
 }
 
-// Ensure asks the kernel for an utunN interface and configures it. macOS does
-// not allow arbitrary utun names; the interface vanishes when its owner closes.
+// Ensure asks the kernel for an utunN interface and configures its address,
+// MTU, and virtual-network route. macOS does not allow arbitrary utun names;
+// the interface and its scoped route vanish when its owner closes.
 func Ensure(ctx context.Context, name, addressCIDR string, mtu int) (tunnel.Device, error) {
 	_ = name
-	ip, n, err := net.ParseCIDR(addressCIDR)
+	ip, network, err := net.ParseCIDR(addressCIDR)
 	if err != nil {
 		return nil, err
 	}
-	parts := make([]string, len(n.Mask))
-	for i, b := range n.Mask {
+	parts := make([]string, len(network.Mask))
+	for i, b := range network.Mask {
 		parts[i] = strconv.Itoa(int(b))
 	}
 	mask := strings.Join(parts, ".")
@@ -36,10 +42,19 @@ func Ensure(ctx context.Context, name, addressCIDR string, mtu int) (tunnel.Devi
 	if err != nil {
 		return nil, fmt.Errorf("open macOS utun (run as root): %w", err)
 	}
-	args := []string{d.Name(), "inet", ip.String(), ip.String(), "netmask", mask, "mtu", strconv.Itoa(mtu), "up"}
-	if out, runErr := exec.CommandContext(ctx, "/sbin/ifconfig", args...).CombinedOutput(); runErr != nil {
-		_ = d.Close()
-		return nil, fmt.Errorf("configure macOS utun: %w: %s", runErr, string(out))
+	commands := darwinTunnelCommands(d.Name(), ip, network, mask, mtu)
+	for _, command := range commands {
+		if out, runErr := exec.CommandContext(ctx, command.path, command.args...).CombinedOutput(); runErr != nil {
+			_ = d.Close()
+			return nil, fmt.Errorf("configure macOS utun with %s: %w: %s", command.path, runErr, string(out))
+		}
 	}
 	return d, nil
+}
+
+func darwinTunnelCommands(name string, ip net.IP, network *net.IPNet, mask string, mtu int) []fixedCommand {
+	return []fixedCommand{
+		{path: "/sbin/ifconfig", args: []string{name, "inet", ip.String(), ip.String(), "netmask", mask, "mtu", strconv.Itoa(mtu), "up"}},
+		{path: "/sbin/route", args: []string{"-n", "add", "-net", network.String(), "-interface", name}},
+	}
 }
