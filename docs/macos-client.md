@@ -17,7 +17,7 @@ server-authoritative virtual IPv4 network route on that utun; macOS removes the
 route when the process-scoped interface closes.
 
 `tyxnet-tray` builds natively on macOS with Cocoa and places the same role-aware
-device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.3.14` creates
+device/browser menu in the menu bar. `sh scripts/package-macos.sh 0.3.15` creates
 an ad-hoc-signed universal DMG for local testing. Public distribution still
 requires a Developer ID signature and Apple notarization.
 

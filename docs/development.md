@@ -11,14 +11,14 @@ local release machine:
 - `make release` builds cross-platform binaries and `dist/checksums.txt`.
 - `make release-full` builds those binaries plus `TyxNet-<version>-macos-universal.dmg`
 	and `TyxNet-<version>-windows-amd64.msi`.
-- Set `VERSION` explicitly when needed, for example `make release-full VERSION=0.3.14`.
+- Set `VERSION` explicitly when needed, for example `make release-full VERSION=0.3.15`.
 - Run `gh release create v<version> dist/* --title v<version>` after pushing the
 	annotated tag, then verify the release page includes every local artifact.
 - GitHub Releases do not update the CasaOS image. After publishing the release,
 	publish the matching multi-architecture image from the same local checkout:
 
 ```bash
-version=0.3.14
+version=0.3.15
 gh auth refresh --hostname github.com --scopes write:packages
 gh auth token | docker login ghcr.io -u "$(gh api user --jq .login)" --password-stdin
 docker buildx create --name tyxnet-release --driver docker-container --use 2>/dev/null || true

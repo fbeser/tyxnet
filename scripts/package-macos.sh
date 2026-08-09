@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${1:-0.3.14}"
+version="${1:-0.3.15}"
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 stage=$(mktemp -d "${TMPDIR:-/tmp}/tyxnet-macos.XXXXXX")
 trap 'rm -rf "$stage"' EXIT INT TERM
