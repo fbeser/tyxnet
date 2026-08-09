@@ -76,7 +76,7 @@ loop. Do not forward TCP 8443, 18080, or 18443 from the modem in this mode.
 
 Leave the remaining port values unchanged unless they conflict with another
 service. `TYXNET_VERSION=latest` follows new releases; use a version such as
-`0.3.13` to pin the deployment.
+`0.3.14` to pin the deployment.
 
 Start everything with current Compose:
 
@@ -278,8 +278,8 @@ Download the binary matching the host architecture from the
 
 ```bash
 # Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.13/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.13/checksums.txt
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.14/tyxnet-server-linux-arm64
+curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.14/checksums.txt
 grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
 chmod +x tyxnet-server-linux-arm64
 
@@ -577,7 +577,7 @@ Useful targets:
 Release targets accept `VERSION`, for example:
 
 ```bash
-make release-full VERSION=0.3.13
+make release-full VERSION=0.3.14
 ```
 
 ## Release verification
