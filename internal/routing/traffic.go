@@ -47,6 +47,13 @@ type TrafficSnapshot struct {
 	Series            []TrafficPoint `json:"series"`
 }
 
+// TrafficHistoryRecord is a one-second, payload-blind aggregate suitable for
+// optional persistence outside the routing package.
+type TrafficHistoryRecord struct {
+	RecordedAt time.Time `json:"recorded_at"`
+	TrafficFlow
+}
+
 type trafficKey struct {
 	source          string
 	destination     string
@@ -66,16 +73,32 @@ type trafficCount struct {
 }
 
 type TrafficMonitor struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	ready   bool
-	buckets map[int64]map[trafficKey]trafficCount
-	keys    map[trafficKey]int
+	mu             sync.Mutex
+	flushMu        sync.Mutex
+	now            func() time.Time
+	ready          bool
+	buckets        map[int64]map[trafficKey]trafficCount
+	keys           map[trafficKey]int
+	historyFlushed map[int64]bool
+	historySink    func([]TrafficHistoryRecord) error
 }
 
 func NewTrafficMonitor() *TrafficMonitor {
-	return &TrafficMonitor{now: time.Now, buckets: make(map[int64]map[trafficKey]trafficCount), keys: make(map[trafficKey]int)}
+	return &TrafficMonitor{now: time.Now, buckets: make(map[int64]map[trafficKey]trafficCount), keys: make(map[trafficKey]int), historyFlushed: make(map[int64]bool)}
 }
+
+func (m *TrafficMonitor) SetHistorySink(sink func([]TrafficHistoryRecord) error) {
+	m.mu.Lock()
+	m.historySink = sink
+	m.mu.Unlock()
+}
+
+// FlushHistory sends completed one-second aggregates to the configured sink.
+func (m *TrafficMonitor) FlushHistory() error { return m.flushHistory(false) }
+
+// FlushHistoryNow also includes the current partial second and is intended for
+// graceful shutdown.
+func (m *TrafficMonitor) FlushHistoryNow() error { return m.flushHistory(true) }
 
 func (m *TrafficMonitor) SetReady(ready bool) {
 	m.mu.Lock()
@@ -154,16 +177,7 @@ func (m *TrafficMonitor) Snapshot() TrafficSnapshot {
 	}
 	snapshot.Series = series
 	for key, count := range flows {
-		flow := TrafficFlow{Source: key.source, Destination: key.destination, Protocol: key.protocol, ProtocolNumber: key.protocolNumber, Bytes: count.bytes, Packets: count.packets, Mbps: megabitsPerSecond(rateBytes[key], rateWindowSeconds)}
-		if key.hasPorts {
-			sourcePort, destinationPort := key.sourcePort, key.destinationPort
-			flow.SourcePort, flow.DestinationPort = &sourcePort, &destinationPort
-		}
-		if key.hasICMP {
-			icmpType, icmpCode := key.icmpType, key.icmpCode
-			flow.ICMPType, flow.ICMPCode = &icmpType, &icmpCode
-		}
-		snapshot.Flows = append(snapshot.Flows, flow)
+		snapshot.Flows = append(snapshot.Flows, trafficFlow(key, count, rateBytes[key]))
 	}
 	sort.Slice(snapshot.Flows, func(i, j int) bool {
 		left, right := snapshot.Flows[i], snapshot.Flows[j]
@@ -203,6 +217,55 @@ func (m *TrafficMonitor) Snapshot() TrafficSnapshot {
 		snapshot.Mbps += megabitsPerSecond(bytes, rateWindowSeconds)
 	}
 	return snapshot
+}
+
+func (m *TrafficMonitor) flushHistory(includeCurrent bool) error {
+	m.flushMu.Lock()
+	defer m.flushMu.Unlock()
+
+	m.mu.Lock()
+	nowSecond := m.now().UTC().Unix()
+	m.prune(nowSecond)
+	seconds := make([]int64, 0, len(m.buckets))
+	for second := range m.buckets {
+		if !m.historyFlushed[second] && (includeCurrent || second < nowSecond) {
+			seconds = append(seconds, second)
+		}
+	}
+	sort.Slice(seconds, func(i, j int) bool { return seconds[i] < seconds[j] })
+	records := make([]TrafficHistoryRecord, 0)
+	for _, second := range seconds {
+		for key, count := range m.buckets[second] {
+			records = append(records, TrafficHistoryRecord{RecordedAt: time.Unix(second, 0).UTC(), TrafficFlow: trafficFlow(key, count, 0)})
+		}
+	}
+	sink := m.historySink
+	m.mu.Unlock()
+	if sink == nil || len(records) == 0 {
+		return nil
+	}
+	if err := sink(records); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	for _, second := range seconds {
+		m.historyFlushed[second] = true
+	}
+	m.mu.Unlock()
+	return nil
+}
+
+func trafficFlow(key trafficKey, count trafficCount, rateBytes uint64) TrafficFlow {
+	flow := TrafficFlow{Source: key.source, Destination: key.destination, Protocol: key.protocol, ProtocolNumber: key.protocolNumber, Bytes: count.bytes, Packets: count.packets, Mbps: megabitsPerSecond(rateBytes, rateWindowSeconds)}
+	if key.hasPorts {
+		sourcePort, destinationPort := key.sourcePort, key.destinationPort
+		flow.SourcePort, flow.DestinationPort = &sourcePort, &destinationPort
+	}
+	if key.hasICMP {
+		icmpType, icmpCode := key.icmpType, key.icmpCode
+		flow.ICMPType, flow.ICMPCode = &icmpType, &icmpCode
+	}
+	return flow
 }
 
 func trafficKeyFromIPv4(packet []byte) (trafficKey, bool) {
@@ -273,6 +336,7 @@ func (m *TrafficMonitor) prune(currentSecond int64) {
 				}
 			}
 			delete(m.buckets, second)
+			delete(m.historyFlushed, second)
 		}
 	}
 }

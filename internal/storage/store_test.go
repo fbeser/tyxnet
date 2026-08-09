@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -20,6 +21,10 @@ func setup(t *testing.T) *Store {
 func TestMigrationAndTokenLimits(t *testing.T) {
 	ctx := context.Background()
 	s := setup(t)
+	var migrationCount int
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE version=2").Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("flow history migration missing: count=%d err=%v", migrationCount, err)
+	}
 	u, err := s.CreateAdmin(ctx, "admin", "hash")
 	if err != nil {
 		t.Fatal(err)
@@ -33,6 +38,91 @@ func TestMigrationAndTokenLimits(t *testing.T) {
 	}
 	if _, err = s.ConsumeToken(ctx, v); err == nil {
 		t.Fatal("usage limit ignored")
+	}
+}
+
+func TestFlowHistoryMigrationUpgradesExistingDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tyxnet.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := migrations.ReadFile("migrations/001_initial.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, string(initial)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, "INSERT INTO schema_migrations(version,applied_at) VALUES(1,?)", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, "INSERT INTO server_settings(key,value,updated_at) VALUES('ping_interval','25s',?)", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var migrated int
+	if err = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE version=2").Scan(&migrated); err != nil || migrated != 1 {
+		t.Fatalf("migration 2 was not applied: %d %v", migrated, err)
+	}
+	if value, err := s.Setting(ctx, "ping_interval"); err != nil || value != "25s" {
+		t.Fatalf("existing setting was not preserved: %q %v", value, err)
+	}
+}
+
+func TestFlowHistoryFilteringTrimmingAndDeletion(t *testing.T) {
+	ctx := context.Background()
+	s := setup(t)
+	base := time.Date(2026, time.August, 9, 9, 30, 0, 0, time.UTC)
+	sourcePort, httpsPort, sshPort := uint16(52000), uint16(443), uint16(22)
+	records := []FlowHistoryRecord{
+		{RecordedAt: base, Source: "10.90.0.2", Destination: "10.90.0.3", Protocol: "udp", ProtocolNumber: 17, SourcePort: &sourcePort, DestinationPort: &httpsPort, Bytes: 10, Packets: 1},
+		{RecordedAt: base.Add(time.Second), Source: "10.90.0.2", Destination: "10.90.0.3", Protocol: "tcp", ProtocolNumber: 6, SourcePort: &sourcePort, DestinationPort: &sshPort, Bytes: 30, Packets: 3},
+		{RecordedAt: base.Add(2 * time.Second), Source: "10.90.0.3", Destination: "10.90.0.2", Protocol: "tcp", ProtocolNumber: 6, SourcePort: &httpsPort, DestinationPort: &sourcePort, Bytes: 20, Packets: 2},
+	}
+	if err := s.InsertFlowHistory(ctx, records, 240); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.ListFlowHistory(ctx, FlowHistoryQuery{Protocol: "tcp", Sort: "oldest", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Records) != 2 || page.Records[0].DestinationPort == nil || *page.Records[0].DestinationPort != 22 || page.StoredBytes > 240 {
+		t.Fatalf("unexpected trimmed flow history: %+v", page)
+	}
+	from := base.Add(2 * time.Second)
+	page, err = s.ListFlowHistory(ctx, FlowHistoryQuery{Search: "laptop", EndpointIPs: []string{"10.90.0.2"}, From: &from, Sort: "bytes", Limit: 10})
+	if err != nil || page.Total != 1 || len(page.Records) != 1 || page.Records[0].Bytes != 20 {
+		t.Fatalf("unexpected filtered flow history: %+v %v", page, err)
+	}
+	deleted, err := s.DeleteFlowHistory(ctx)
+	if err != nil || deleted != 2 {
+		t.Fatalf("delete flow history: count=%d err=%v", deleted, err)
+	}
+	page, err = s.ListFlowHistory(ctx, FlowHistoryQuery{})
+	if err != nil || page.Total != 0 || page.StoredBytes != 0 || page.Records == nil {
+		t.Fatalf("flow history was not cleared: %+v %v", page, err)
+	}
+}
+
+func TestSetSettingsPersistsAtomically(t *testing.T) {
+	ctx := context.Background()
+	s := setup(t)
+	if err := s.SetSettings(ctx, map[string]string{"flow_history_enabled": "true", "flow_history_limit_mb": "100"}); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{"flow_history_enabled": "true", "flow_history_limit_mb": "100"} {
+		if got, err := s.Setting(ctx, key); err != nil || got != want {
+			t.Fatalf("setting %s=%q, want %q: %v", key, got, want, err)
+		}
 	}
 }
 func TestTokenExpiration(t *testing.T) {

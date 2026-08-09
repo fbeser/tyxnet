@@ -445,11 +445,32 @@ management, administrator password resets, token management, command history,
 server settings, network-flow telemetry, and audit logs. The flow panel shows
 device-to-device direction, TCP/UDP ports or ICMP metadata, stable sorting,
 filters, expandable details, current Mbps, packet totals, and a 60-second chart
-from successfully routed virtual-IP packets. For example, the additive flow API
+from successfully routed virtual-IP packets. Administrators can optionally
+enable persistent flow history and set a 1–10240 MB logical metadata budget;
+recording is off by default, the setting survives restart, and the oldest saved
+rows are removed when the selected budget is reached. Saved history has endpoint,
+protocol, date/time, transfer, and packet filters plus an administrator-only
+delete-all action. For example, the additive live flow API
 metadata includes:
 
 ```json
 {"source":"10.90.0.2","destination":"10.90.0.3","protocol":"tcp","protocol_number":6,"source_port":52000,"destination_port":22}
+```
+
+The authenticated API can enable a 100 MB history budget and query a UTC time
+range without exposing packet contents:
+
+```bash
+curl -X PATCH https://vpn.example.com/api/v1/server/settings \
+  -H "Authorization: Bearer $TYXNET_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"flow_history_enabled":true,"flow_history_limit_mb":100}'
+
+curl -G https://vpn.example.com/api/v1/network/flows/history \
+  -H "Authorization: Bearer $TYXNET_ACCESS_TOKEN" \
+  --data-urlencode 'protocol=tcp' \
+  --data-urlencode 'from=2026-08-09T09:00:00Z' \
+  --data-urlencode 'to=2026-08-09T10:00:00Z'
 ```
 
 Resetting a password signs out
@@ -463,10 +484,12 @@ characters. **Remember me** creates a 30-day session only over HTTPS.
 | Viewer | All devices | View only |
 | Member | Devices owned by that user | View only |
 
-Admins, operators, and viewers can view flow metadata. Members cannot access the
-cross-device flow panel. Traffic payloads, DNS names, and application-protocol
-contents are not stored; IP protocol and port/ICMP header metadata plus live
-counters remain only in server memory for 60 seconds.
+Admins, operators, and viewers can view live and saved flow metadata. Members
+cannot access the cross-device flow panel. Traffic payloads, DNS names, and
+application-protocol contents are not stored. Live IP protocol and port/ICMP
+metadata remains in memory for 60 seconds. When an administrator enables flow
+history, one-second aggregates of that same metadata are persisted to SQLite
+until deleted or aged out by the configured logical metadata budget.
 
 Reconnect, restart, and shutdown commands are delivered over the authenticated
 control stream and tracked as queued, delivered, accepted, succeeded, failed, or

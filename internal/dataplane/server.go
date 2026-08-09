@@ -72,6 +72,7 @@ func Listen(address string, adapter tunnel.Device, serverIP net.IP, mtu int, mon
 	monitor.SetReady(true)
 	go server.readUDP()
 	go server.readAdapter()
+	go server.flushTrafficHistory()
 	return server, nil
 }
 
@@ -124,9 +125,22 @@ func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.closed)
 		s.monitor.SetReady(false)
-		err = s.conn.Close()
+		err = errors.Join(s.monitor.FlushHistoryNow(), s.conn.Close())
 	})
 	return err
+}
+
+func (s *Server) flushTrafficHistory() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			_ = s.monitor.FlushHistory()
+		case <-s.closed:
+			return
+		}
+	}
 }
 
 func (s *Server) readUDP() {

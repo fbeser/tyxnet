@@ -402,6 +402,30 @@ func TestNetworkFlowsExposeRoutedMetadataByRole(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("member network flows: %d %s", w.Code, w.Body.String())
 	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/network/flows/history", nil)
+	r.Header.Set("Authorization", "Bearer "+memberSession)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("member network flow history: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestFlowHistoryIsDisabledByDefault(t *testing.T) {
+	st, err := storage.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	server.TrafficMonitor().Observe(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"), 80)
+	if err = server.TrafficMonitor().FlushHistoryNow(); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.ListFlowHistory(context.Background(), storage.FlowHistoryQuery{})
+	if err != nil || page.Total != 0 || server.flowHistoryOn.Load() || server.flowHistoryMB.Load() != defaultFlowHistoryMB {
+		t.Fatalf("disabled history persisted data or used invalid defaults: %+v %v", page, err)
+	}
 }
 
 func TestCommandDeliveryAndAuthenticatedResults(t *testing.T) {
@@ -546,6 +570,9 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("flowStableKey")) || !bytes.Contains(w.Body.Bytes(), []byte("data-flow-details")) || !bytes.Contains(w.Body.Bytes(), []byte("flow-protocol")) {
 		t.Fatal("stable flow sorting, details, or filtering controls are missing")
 	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("flowHistoryURL")) || !bytes.Contains(w.Body.Bytes(), []byte("flow-history-enabled")) || !bytes.Contains(w.Body.Bytes(), []byte("data-flow-history-details")) || !bytes.Contains(w.Body.Bytes(), []byte("flow-history-delete")) {
+		t.Fatal("flow history settings, filters, details, or deletion controls are missing")
+	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("radiusY=105")) {
 		t.Fatal("network flow topology does not preserve label space")
 	}
@@ -568,7 +595,8 @@ func TestAdminUpdatesStaticIPAndPingInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, _ := st.CreateSession(ctx, admin.ID, time.Hour)
-	h := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true).Handler()
+	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	h := server.Handler()
 
 	r := httptest.NewRequest(http.MethodPatch, "/api/v1/devices/"+device.ID, bytes.NewBufferString(`{"VirtualIP":"10.90.0.42"}`))
 	r.Header.Set("Authorization", "Bearer "+session)
@@ -593,13 +621,59 @@ func TestAdminUpdatesStaticIPAndPingInterval(t *testing.T) {
 		t.Fatalf("ping interval status: %d %s", w.Code, w.Body.String())
 	}
 
+	r = httptest.NewRequest(http.MethodPatch, "/api/v1/server/settings", bytes.NewBufferString(`{"flow_history_enabled":true,"flow_history_limit_mb":100}`))
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"flow_history_enabled":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"flow_history_limit_mb":100`)) {
+		t.Fatalf("flow history settings update: %d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPatch, "/api/v1/server/settings", bytes.NewBufferString(`{"flow_history_limit_mb":0}`))
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid flow history limit: %d %s", w.Code, w.Body.String())
+	}
+	packet := make([]byte, 40)
+	packet[0], packet[9] = 0x45, 6
+	copy(packet[12:16], net.ParseIP("10.90.0.42").To4())
+	copy(packet[16:20], net.ParseIP("10.90.0.3").To4())
+	binary.BigEndian.PutUint16(packet[20:22], 52000)
+	binary.BigEndian.PutUint16(packet[22:24], 443)
+	server.TrafficMonitor().ObservePacket(packet)
+	if err := server.TrafficMonitor().FlushHistoryNow(); err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/network/flows/history?protocol=tcp&q=laptop&sort=oldest", nil)
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"recording_enabled":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"destination_port":443`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"total":1`)) {
+		t.Fatalf("flow history query: %d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodGet, "/api/v1/network/flows/history?from=not-a-date", nil)
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid flow history date: %d %s", w.Code, w.Body.String())
+	}
+
 	h = New(st, "10.90.0.0/24", time.Minute, slog.Default(), true).Handler()
 	r = httptest.NewRequest(http.MethodGet, "/api/v1/server/settings", nil)
 	r.Header.Set("Authorization", "Bearer "+session)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"ping_interval_seconds":60`)) {
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"ping_interval_seconds":60`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"flow_history_enabled":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"flow_history_limit_mb":100`)) {
 		t.Fatalf("persisted ping interval: %d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodDelete, "/api/v1/network/flows/history", nil)
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete flow history: %d %s", w.Code, w.Body.String())
 	}
 }
 

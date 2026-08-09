@@ -25,7 +25,11 @@ Successfully routed packets feed a payload-blind observer that retains source
 and destination virtual IPs, IPv4 protocol and transport-port or ICMP header
 metadata, byte counts, and packet counts in one-second memory
 buckets for 60 seconds. The management API derives five-second Mbps rates and a
-60-second time series from those buckets. Rejected packets are never counted.
+60-second time series from those buckets. An optional routing history sink emits
+completed one-second aggregates to SQLite only while the persistent administrator
+setting is enabled. A logical metadata-byte budget bounds the history table and
+transactionally removes its oldest rows without affecting other server data.
+Rejected packets are never counted.
 `tunnel.Memory` permits rootless integration tests. Server and client adapters
 use Linux `/dev/net/tun`, Windows Wintun, or kernel-assigned macOS `utunN`
 devices. A client derives a stable adapter identity from its server URL, keeping

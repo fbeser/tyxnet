@@ -9,6 +9,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"strings"
@@ -48,6 +49,38 @@ type AuditLog struct {
 	ID                                          int64
 	ActorID, Action, TargetID, RemoteIP, Detail string
 	CreatedAt                                   time.Time
+}
+
+type FlowHistoryRecord struct {
+	ID              int64     `json:"id"`
+	RecordedAt      time.Time `json:"recorded_at"`
+	Source          string    `json:"source"`
+	Destination     string    `json:"destination"`
+	Protocol        string    `json:"protocol"`
+	ProtocolNumber  uint8     `json:"protocol_number"`
+	SourcePort      *uint16   `json:"source_port,omitempty"`
+	DestinationPort *uint16   `json:"destination_port,omitempty"`
+	ICMPType        *uint8    `json:"icmp_type,omitempty"`
+	ICMPCode        *uint8    `json:"icmp_code,omitempty"`
+	Bytes           uint64    `json:"bytes"`
+	Packets         uint64    `json:"packets"`
+	StorageBytes    int64     `json:"storage_bytes"`
+}
+
+type FlowHistoryQuery struct {
+	Search      string
+	EndpointIPs []string
+	Protocol    string
+	From        *time.Time
+	To          *time.Time
+	Sort        string
+	Limit       int
+}
+
+type FlowHistoryPage struct {
+	Records     []FlowHistoryRecord `json:"records"`
+	Total       int64               `json:"total"`
+	StoredBytes int64               `json:"stored_bytes"`
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -425,6 +458,220 @@ func (s *Store) SetSetting(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO server_settings(key,value,updated_at) VALUES(?,?,?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *Store) SetSettings(ctx context.Context, values map[string]string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for key, value := range values {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO server_settings(key,value,updated_at) VALUES(?,?,?)
+			ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) InsertFlowHistory(ctx context.Context, records []FlowHistoryRecord, maxBytes int64) error {
+	if len(records) == 0 {
+		return nil
+	}
+	if maxBytes <= 0 {
+		return errors.New("flow history limit must be positive")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	statement, err := tx.PrepareContext(ctx, `INSERT INTO flow_history(recorded_at,source,destination,protocol,protocol_number,source_port,destination_port,icmp_type,icmp_code,bytes,packets,storage_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = statement.Close() }()
+	for _, record := range records {
+		if record.Bytes > math.MaxInt64 || record.Packets > math.MaxInt64 {
+			return errors.New("flow history counter exceeds storage range")
+		}
+		record.StorageBytes = flowHistoryStorageBytes(record)
+		if _, err = statement.ExecContext(ctx, record.RecordedAt.UTC().Format(time.RFC3339Nano), record.Source, record.Destination, record.Protocol, record.ProtocolNumber, nullableUint16(record.SourcePort), nullableUint16(record.DestinationPort), nullableUint8(record.ICMPType), nullableUint8(record.ICMPCode), record.Bytes, record.Packets, record.StorageBytes); err != nil {
+			return err
+		}
+	}
+	if err = trimFlowHistory(ctx, tx, maxBytes); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) TrimFlowHistory(ctx context.Context, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return errors.New("flow history limit must be positive")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = trimFlowHistory(ctx, tx, maxBytes); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func trimFlowHistory(ctx context.Context, tx *sql.Tx, maxBytes int64) error {
+	var total int64
+	if err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(storage_bytes),0) FROM flow_history").Scan(&total); err != nil || total <= maxBytes {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT id,storage_bytes FROM flow_history ORDER BY recorded_at,id")
+	if err != nil {
+		return err
+	}
+	var removed int64
+	ids := make([]int64, 0)
+	for rows.Next() && total-removed > maxBytes {
+		var id, size int64
+		if err = rows.Scan(&id, &size); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+		removed += size
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if _, err = tx.ExecContext(ctx, "DELETE FROM flow_history WHERE id=?", id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ListFlowHistory(ctx context.Context, query FlowHistoryQuery) (FlowHistoryPage, error) {
+	if query.Limit <= 0 || query.Limit > 500 {
+		query.Limit = 500
+	}
+	where := []string{"1=1"}
+	args := make([]any, 0, 5)
+	if search := strings.TrimSpace(query.Search); search != "" {
+		searchClause := `instr(lower(source || ' ' || destination || ' ' || protocol || ' ' || COALESCE(source_port,'') || ' ' || COALESCE(destination_port,'')),lower(?))>0`
+		args = append(args, search)
+		if len(query.EndpointIPs) > 100 {
+			query.EndpointIPs = query.EndpointIPs[:100]
+		}
+		if len(query.EndpointIPs) > 0 {
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", len(query.EndpointIPs)), ",")
+			searchClause = "(" + searchClause + " OR source IN (" + placeholders + ") OR destination IN (" + placeholders + "))"
+			for _, ip := range query.EndpointIPs {
+				args = append(args, ip)
+			}
+			for _, ip := range query.EndpointIPs {
+				args = append(args, ip)
+			}
+		}
+		where = append(where, searchClause)
+	}
+	if query.Protocol != "" && query.Protocol != "all" {
+		where = append(where, "protocol=?")
+		args = append(args, query.Protocol)
+	}
+	if query.From != nil {
+		where = append(where, "recorded_at>=?")
+		args = append(args, query.From.UTC().Format(time.RFC3339Nano))
+	}
+	if query.To != nil {
+		where = append(where, "recorded_at<=?")
+		args = append(args, query.To.UTC().Format(time.RFC3339Nano))
+	}
+	clause := strings.Join(where, " AND ")
+	order := map[string]string{"oldest": "recorded_at ASC,id ASC", "bytes": "bytes DESC,recorded_at DESC,id DESC", "packets": "packets DESC,recorded_at DESC,id DESC"}[query.Sort]
+	if order == "" {
+		order = "recorded_at DESC,id DESC"
+	}
+	page := FlowHistoryPage{Records: make([]FlowHistoryRecord, 0)}
+	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM flow_history WHERE "+clause, args...).Scan(&page.Total); err != nil {
+		return page, err
+	}
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(SUM(storage_bytes),0) FROM flow_history").Scan(&page.StoredBytes); err != nil {
+		return page, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,recorded_at,source,destination,protocol,protocol_number,source_port,destination_port,icmp_type,icmp_code,bytes,packets,storage_bytes FROM flow_history WHERE `+clause+` ORDER BY `+order+` LIMIT ?`, append(args, query.Limit)...)
+	if err != nil {
+		return page, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var record FlowHistoryRecord
+		var recorded string
+		var protocolNumber int64
+		var sourcePort, destinationPort, icmpType, icmpCode sql.NullInt64
+		var byteCount, packetCount int64
+		if err = rows.Scan(&record.ID, &recorded, &record.Source, &record.Destination, &record.Protocol, &protocolNumber, &sourcePort, &destinationPort, &icmpType, &icmpCode, &byteCount, &packetCount, &record.StorageBytes); err != nil {
+			return page, err
+		}
+		record.RecordedAt, _ = time.Parse(time.RFC3339Nano, recorded)
+		record.ProtocolNumber = uint8(protocolNumber)
+		record.SourcePort = uint16Pointer(sourcePort)
+		record.DestinationPort = uint16Pointer(destinationPort)
+		record.ICMPType = uint8Pointer(icmpType)
+		record.ICMPCode = uint8Pointer(icmpCode)
+		record.Bytes, record.Packets = uint64(byteCount), uint64(packetCount)
+		page.Records = append(page.Records, record)
+	}
+	return page, rows.Err()
+}
+
+func (s *Store) DeleteFlowHistory(ctx context.Context) (int64, error) {
+	result, err := s.db.ExecContext(ctx, "DELETE FROM flow_history")
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func flowHistoryStorageBytes(record FlowHistoryRecord) int64 {
+	return int64(96 + len(record.Source) + len(record.Destination) + len(record.Protocol))
+}
+
+func nullableUint16(value *uint16) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableUint8(value *uint8) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func uint16Pointer(value sql.NullInt64) *uint16 {
+	if !value.Valid {
+		return nil
+	}
+	converted := uint16(value.Int64)
+	return &converted
+}
+
+func uint8Pointer(value sql.NullInt64) *uint8 {
+	if !value.Valid {
+		return nil
+	}
+	converted := uint8(value.Int64)
+	return &converted
 }
 func (s *Store) TouchDevice(ctx context.Context, deviceID string) error {
 	_, err := s.db.ExecContext(ctx, "UPDATE devices SET last_seen=? WHERE id=? AND revoked=0", time.Now().UTC().Format(time.RFC3339Nano), deviceID)

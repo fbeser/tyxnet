@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,6 +47,8 @@ type Server struct {
 	adapterName      string
 	adapterAddress   string
 	pingIntervalNS   atomic.Int64
+	flowHistoryOn    atomic.Bool
+	flowHistoryMB    atomic.Int64
 	startupSpec      application.StartupSpec
 	trayToken        string
 	shutdown         func()
@@ -88,18 +91,31 @@ type ctxKey string
 const userKey ctxKey = "user"
 
 const (
-	sessionCookieName  = "tyxnet_session"
-	rememberSessionTTL = 30 * 24 * time.Hour
+	sessionCookieName    = "tyxnet_session"
+	rememberSessionTTL   = 30 * 24 * time.Hour
+	defaultFlowHistoryMB = 100
+	minFlowHistoryMB     = 1
+	maxFlowHistoryMB     = 10_240
 )
 
 func New(store *storage.Store, network string, ttl time.Duration, log *slog.Logger, localBootstrap bool) *Server {
 	s := &Server{store: store, network: network, ttl: ttl, started: time.Now(), log: log, limiter: &ipLimiter{hits: map[string][]time.Time{}}, challenges: map[string]challenge{}, connections: map[string]int{}, localBootstrap: localBootstrap, startupAvailable: application.StartupAvailable, startupEnabled: application.StartupEnabled, setStartup: application.SetStartup, traffic: routing.NewTrafficMonitor(), commandSignals: map[string]chan struct{}{}}
 	s.pingIntervalNS.Store(int64(25 * time.Second))
+	s.flowHistoryMB.Store(defaultFlowHistoryMB)
 	if value, err := store.Setting(context.Background(), "ping_interval"); err == nil {
 		if interval, parseErr := time.ParseDuration(value); parseErr == nil && validPingInterval(interval) {
 			s.pingIntervalNS.Store(int64(interval))
 		}
 	}
+	if value, err := store.Setting(context.Background(), "flow_history_enabled"); err == nil {
+		s.flowHistoryOn.Store(value == "true")
+	}
+	if value, err := store.Setting(context.Background(), "flow_history_limit_mb"); err == nil {
+		if limit, parseErr := strconv.ParseInt(value, 10, 64); parseErr == nil && validFlowHistoryLimit(limit) {
+			s.flowHistoryMB.Store(limit)
+		}
+	}
+	s.traffic.SetHistorySink(s.persistFlowHistory)
 	return s
 }
 
@@ -126,7 +142,37 @@ func validPingInterval(interval time.Duration) bool {
 	return interval >= 5*time.Second && interval <= time.Hour
 }
 
+func validFlowHistoryLimit(limitMB int64) bool {
+	return limitMB >= minFlowHistoryMB && limitMB <= maxFlowHistoryMB
+}
+
+func (s *Server) persistFlowHistory(records []routing.TrafficHistoryRecord) error {
+	if !s.flowHistoryOn.Load() {
+		return nil
+	}
+	stored := make([]storage.FlowHistoryRecord, 0, len(records))
+	for _, record := range records {
+		flow := record.TrafficFlow
+		stored = append(stored, storage.FlowHistoryRecord{RecordedAt: record.RecordedAt, Source: flow.Source, Destination: flow.Destination, Protocol: flow.Protocol, ProtocolNumber: flow.ProtocolNumber, SourcePort: flow.SourcePort, DestinationPort: flow.DestinationPort, ICMPType: flow.ICMPType, ICMPCode: flow.ICMPCode, Bytes: flow.Bytes, Packets: flow.Packets})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := s.store.InsertFlowHistory(ctx, stored, s.flowHistoryMB.Load()*1_000_000)
+	if err != nil {
+		s.log.Error("flow history persistence failed", "error", err)
+	}
+	return err
+}
+
 func (s *Server) pingInterval() time.Duration { return time.Duration(s.pingIntervalNS.Load()) }
+
+func (s *Server) serverSettings() map[string]any {
+	return map[string]any{
+		"ping_interval_seconds": int(s.pingInterval().Seconds()),
+		"flow_history_enabled":  s.flowHistoryOn.Load(),
+		"flow_history_limit_mb": s.flowHistoryMB.Load(),
+	}
+}
 
 func (s *Server) deviceConnected(deviceID string) {
 	s.connectionsMu.Lock()
@@ -683,30 +729,96 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !permit(w, u, "server.configure") {
 			return
 		}
-		write(w, 200, map[string]any{"ping_interval_seconds": int(s.pingInterval().Seconds())})
+		write(w, 200, s.serverSettings())
 	case r.Method == "PATCH" && path == "server/settings":
 		if !permit(w, u, "server.configure") {
 			return
 		}
 		var in struct {
-			PingIntervalSeconds int `json:"ping_interval_seconds"`
+			PingIntervalSeconds *int   `json:"ping_interval_seconds"`
+			FlowHistoryEnabled  *bool  `json:"flow_history_enabled"`
+			FlowHistoryLimitMB  *int64 `json:"flow_history_limit_mb"`
 		}
 		if decode(r, &in) != nil {
 			problem(w, 400, "invalid_request", "invalid JSON")
 			return
 		}
-		interval := time.Duration(in.PingIntervalSeconds) * time.Second
-		if !validPingInterval(interval) {
-			problem(w, 400, "invalid_ping_interval", "ping interval must be between 5 and 3600 seconds")
+		if in.PingIntervalSeconds == nil && in.FlowHistoryEnabled == nil && in.FlowHistoryLimitMB == nil {
+			problem(w, 400, "invalid_request", "at least one setting is required")
 			return
 		}
-		if err := s.store.SetSetting(r.Context(), "ping_interval", interval.String()); err != nil {
+		values := make(map[string]string)
+		if in.PingIntervalSeconds != nil {
+			interval := time.Duration(*in.PingIntervalSeconds) * time.Second
+			if !validPingInterval(interval) {
+				problem(w, 400, "invalid_ping_interval", "ping interval must be between 5 and 3600 seconds")
+				return
+			}
+			values["ping_interval"] = interval.String()
+		}
+		if in.FlowHistoryLimitMB != nil && !validFlowHistoryLimit(*in.FlowHistoryLimitMB) {
+			problem(w, 400, "invalid_flow_history_limit", "flow history limit must be between 1 and 10240 MB")
+			return
+		}
+		if in.FlowHistoryEnabled != nil {
+			values["flow_history_enabled"] = strconv.FormatBool(*in.FlowHistoryEnabled)
+		}
+		if in.FlowHistoryLimitMB != nil {
+			values["flow_history_limit_mb"] = strconv.FormatInt(*in.FlowHistoryLimitMB, 10)
+		}
+		if in.FlowHistoryEnabled != nil && *in.FlowHistoryEnabled && !s.flowHistoryOn.Load() {
+			if err := s.traffic.FlushHistory(); err != nil {
+				problem(w, 500, "flow_history_flush_failed", "pending flow metadata could not be finalized")
+				return
+			}
+		}
+		wasFlowHistoryEnabled := s.flowHistoryOn.Load()
+		if in.FlowHistoryEnabled != nil && !*in.FlowHistoryEnabled {
+			s.flowHistoryOn.Store(false)
+		}
+		if err := s.store.SetSettings(r.Context(), values); err != nil {
+			s.flowHistoryOn.Store(wasFlowHistoryEnabled)
 			problem(w, 500, "internal", "settings could not be saved")
 			return
 		}
-		s.pingIntervalNS.Store(int64(interval))
-		s.store.Audit(r.Context(), u.ID, "server.ping_interval.update", "server", r.RemoteAddr, interval.String())
-		write(w, 200, map[string]any{"ping_interval_seconds": in.PingIntervalSeconds})
+		if value, ok := values["ping_interval"]; ok {
+			interval, _ := time.ParseDuration(value)
+			s.pingIntervalNS.Store(int64(interval))
+		}
+		if in.FlowHistoryEnabled != nil {
+			s.flowHistoryOn.Store(*in.FlowHistoryEnabled)
+		}
+		if in.FlowHistoryLimitMB != nil {
+			s.flowHistoryMB.Store(*in.FlowHistoryLimitMB)
+			if err := s.store.TrimFlowHistory(r.Context(), *in.FlowHistoryLimitMB*1_000_000); err != nil {
+				problem(w, 500, "flow_history_trim_failed", "flow history could not be trimmed to the new limit")
+				return
+			}
+		}
+		detail := fmt.Sprintf("flow_history_enabled=%t flow_history_limit_mb=%d", s.flowHistoryOn.Load(), s.flowHistoryMB.Load())
+		s.store.Audit(r.Context(), u.ID, "server.settings.update", "server", r.RemoteAddr, detail)
+		write(w, 200, s.serverSettings())
+	case r.Method == "GET" && path == "network/flows/history":
+		if !permit(w, u, "network.flow.view") {
+			return
+		}
+		s.networkFlowHistory(w, r)
+	case r.Method == "DELETE" && path == "network/flows/history":
+		if !permit(w, u, "server.configure") {
+			return
+		}
+		count, err := s.store.DeleteFlowHistory(r.Context())
+		if err != nil {
+			problem(w, 500, "flow_history_delete_failed", "flow history could not be deleted")
+			return
+		}
+		s.store.Audit(r.Context(), u.ID, "network.flow_history.delete", "flow_history", r.RemoteAddr, fmt.Sprintf("records=%d", count))
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == "GET" && path == "network/flows":
+		if !permit(w, u, "network.flow.view") {
+			return
+		}
+		s.networkFlows(w, r)
 	case r.Method == "GET" && path == "server/startup":
 		if !permit(w, u, "server.configure") {
 			return
@@ -835,11 +947,6 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		write(w, 200, map[string]any{"uptime_seconds": int(time.Since(s.started).Seconds()), "devices": len(ds), "users": len(us), "online_devices": online, "offline_devices": len(ds) - online, "active_commands": active, "adapter_name": s.adapterName, "adapter_address": s.adapterAddress, "adapter_ready": s.adapterName != "", "ping_interval_seconds": int(s.pingInterval().Seconds()), "version": buildinfo.Version})
-	case r.Method == "GET" && path == "network/flows":
-		if !permit(w, u, "network.flow.view") {
-			return
-		}
-		s.networkFlows(w, r)
 	case r.Method == "GET" && path == "commands":
 		if !permit(w, u, "device.view") {
 			return
@@ -894,6 +1001,72 @@ func (s *Server) networkFlows(w http.ResponseWriter, r *http.Request) {
 		nodes = append(nodes, networkNode{ID: device.ID, Name: device.Name, IP: device.VirtualIP, Kind: "device", Online: s.deviceOnline(device.ID), Platform: device.OS + " / " + device.Arch})
 	}
 	write(w, 200, networkFlowResponse{TrafficSnapshot: s.traffic.Snapshot(), Nodes: nodes})
+}
+
+type networkFlowHistoryResponse struct {
+	storage.FlowHistoryPage
+	RecordingEnabled bool  `json:"recording_enabled"`
+	LimitMB          int64 `json:"limit_mb"`
+}
+
+func (s *Server) networkFlowHistory(w http.ResponseWriter, r *http.Request) {
+	query := storage.FlowHistoryQuery{Search: r.URL.Query().Get("q"), Protocol: r.URL.Query().Get("protocol"), Sort: r.URL.Query().Get("sort"), Limit: 500}
+	if len(query.Search) > 128 {
+		problem(w, 400, "invalid_flow_history_search", "flow history search must not exceed 128 characters")
+		return
+	}
+	if query.Protocol == "" {
+		query.Protocol = "all"
+	}
+	if !map[string]bool{"all": true, "tcp": true, "udp": true, "icmp": true, "other": true}[query.Protocol] {
+		problem(w, 400, "invalid_flow_history_protocol", "protocol must be all, tcp, udp, icmp, or other")
+		return
+	}
+	if query.Sort == "" {
+		query.Sort = "newest"
+	}
+	if !map[string]bool{"newest": true, "oldest": true, "bytes": true, "packets": true}[query.Sort] {
+		problem(w, 400, "invalid_flow_history_sort", "sort must be newest, oldest, bytes, or packets")
+		return
+	}
+	if raw := r.URL.Query().Get("from"); raw != "" {
+		value, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			problem(w, 400, "invalid_flow_history_from", "from must be an RFC3339 timestamp")
+			return
+		}
+		query.From = &value
+	}
+	if raw := r.URL.Query().Get("to"); raw != "" {
+		value, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			problem(w, 400, "invalid_flow_history_to", "to must be an RFC3339 timestamp")
+			return
+		}
+		query.To = &value
+	}
+	if query.From != nil && query.To != nil && query.From.After(*query.To) {
+		problem(w, 400, "invalid_flow_history_range", "from must not be later than to")
+		return
+	}
+	if search := strings.ToLower(strings.TrimSpace(query.Search)); search != "" {
+		devices, err := s.store.ListDevices(r.Context())
+		if err != nil {
+			problem(w, 500, "flow_history_failed", "flow history device names could not be loaded")
+			return
+		}
+		for _, device := range devices {
+			if strings.Contains(strings.ToLower(device.Name), search) {
+				query.EndpointIPs = append(query.EndpointIPs, device.VirtualIP)
+			}
+		}
+	}
+	page, err := s.store.ListFlowHistory(r.Context(), query)
+	if err != nil {
+		problem(w, 500, "flow_history_failed", "flow history could not be loaded")
+		return
+	}
+	write(w, 200, networkFlowHistoryResponse{FlowHistoryPage: page, RecordingEnabled: s.flowHistoryOn.Load(), LimitMB: s.flowHistoryMB.Load()})
 }
 func (s *Server) createUser(w http.ResponseWriter, r *http.Request, actor storage.User) {
 	var in struct{ Username, Password, Role string }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"math"
 	"net"
 	"testing"
@@ -114,6 +115,50 @@ func TestTrafficMonitorBoundsAndExpiresUniqueFlows(t *testing.T) {
 	monitor.ObservePacket(flowPacket(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"), 6, 65000, 443, 40))
 	if flows := monitor.Snapshot().Flows; len(flows) != 1 || flows[0].SourcePort == nil || *flows[0].SourcePort != 65000 {
 		t.Fatalf("expired flow capacity was not released: %+v", flows)
+	}
+}
+
+func TestTrafficMonitorFlushesCompletedHistoryOnceAndRetriesFailures(t *testing.T) {
+	current := time.Date(2026, time.August, 9, 12, 0, 0, 0, time.UTC)
+	monitor := NewTrafficMonitor()
+	monitor.now = func() time.Time { return current }
+	monitor.ObservePacket(flowPacket(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"), 6, 52000, 443, 40))
+	var calls int
+	var saved []TrafficHistoryRecord
+	monitor.SetHistorySink(func(records []TrafficHistoryRecord) error {
+		calls++
+		if calls == 1 {
+			return errors.New("temporary storage error")
+		}
+		saved = append(saved, records...)
+		return nil
+	})
+	current = current.Add(time.Second)
+	if err := monitor.FlushHistory(); err == nil {
+		t.Fatal("history sink failure was ignored")
+	}
+	if err := monitor.FlushHistory(); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.FlushHistory(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(saved) != 1 {
+		t.Fatalf("history was duplicated or not retried: calls=%d records=%+v", calls, saved)
+	}
+	record := saved[0]
+	if !record.RecordedAt.Equal(current.Add(-time.Second)) || record.Protocol != "tcp" || record.SourcePort == nil || *record.SourcePort != 52000 || record.DestinationPort == nil || *record.DestinationPort != 443 || record.Bytes != 40 || record.Packets != 1 {
+		t.Fatalf("unexpected history record: %+v", record)
+	}
+}
+
+func TestTrafficMonitorFlushHistoryNowIncludesPartialSecond(t *testing.T) {
+	monitor := NewTrafficMonitor()
+	monitor.Observe(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"), 80)
+	var saved []TrafficHistoryRecord
+	monitor.SetHistorySink(func(records []TrafficHistoryRecord) error { saved = append(saved, records...); return nil })
+	if err := monitor.FlushHistoryNow(); err != nil || len(saved) != 1 || saved[0].Bytes != 80 {
+		t.Fatalf("partial history was not flushed: %+v %v", saved, err)
 	}
 }
 
