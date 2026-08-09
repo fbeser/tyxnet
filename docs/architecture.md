@@ -22,7 +22,8 @@ The UDP data plane transports IPv4 packets between native adapters through the
 central server. `routing.Router` enforces that an IPv4 source equals the peer's
 assigned address and drops unknown targets.
 Successfully routed packets feed a payload-blind observer that retains source
-and destination virtual IPs, byte counts, and packet counts in one-second memory
+and destination virtual IPs, IPv4 protocol and transport-port or ICMP header
+metadata, byte counts, and packet counts in one-second memory
 buckets for 60 seconds. The management API derives five-second Mbps rates and a
 60-second time series from those buckets. Rejected packets are never counted.
 `tunnel.Memory` permits rootless integration tests. Server and client adapters

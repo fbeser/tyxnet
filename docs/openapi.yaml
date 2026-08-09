@@ -32,9 +32,16 @@ components:
       properties: {password: {type: string, format: password, minLength: 12}}
     TrafficFlow:
       type: object
+      required: [source, destination, protocol, protocol_number, bytes, packets, mbps]
       properties:
         source: {type: string, format: ipv4}
         destination: {type: string, format: ipv4}
+        protocol: {type: string, enum: [tcp, udp, icmp, other]}
+        protocol_number: {type: integer, minimum: 0, maximum: 255}
+        source_port: {type: integer, minimum: 0, maximum: 65535, description: Present for TCP and UDP first fragments with a complete transport header.}
+        destination_port: {type: integer, minimum: 0, maximum: 65535, description: Present for TCP and UDP first fragments with a complete transport header.}
+        icmp_type: {type: integer, minimum: 0, maximum: 255, description: Present for ICMP first fragments with a complete ICMP header.}
+        icmp_code: {type: integer, minimum: 0, maximum: 255, description: Present for ICMP first fragments with a complete ICMP header.}
         bytes: {type: integer, minimum: 0}
         packets: {type: integer, minimum: 0}
         mbps: {type: number, minimum: 0, description: Five-second moving average in megabits per second.}
@@ -163,7 +170,7 @@ paths:
     get: {security: [{bearerAuth: []}], responses: {'200': {description: Status counters, virtual-adapter readiness, and running server version}}}
   /api/v1/network/flows:
     get:
-      description: Returns the visible device topology plus payload-blind, in-memory packet counts, byte counts, five-second Mbps rates, and a 60-second series. Admin, operator, and viewer roles are allowed; member is denied. Data remains empty while the UDP data plane is inactive.
+      description: Returns the visible device topology plus payload-blind, in-memory IPv4 protocol/port metadata, packet counts, byte counts, five-second Mbps rates, and a 60-second series capped at 4096 unique flow keys. Admin, operator, and viewer roles are allowed; member is denied. Data remains empty while the UDP data plane is inactive.
       security: [{bearerAuth: []}]
       responses:
         '200':

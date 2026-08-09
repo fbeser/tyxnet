@@ -330,7 +330,7 @@ plane. Host firewalls and the destination service must still allow that traffic.
 - HKDF-SHA256, ChaCha20-Poly1305, directional keys, and replay protection
 - Argon2id passwords and one-way hashes for random tokens
 - Virtual source-IP validation and central routing policy
-- Live network topology, per-flow Mbps, packet totals, and 60-second throughput charts
+- Live network topology, stable/filterable protocol and port flows, per-flow Mbps, packet totals, and 60-second throughput charts
 - Windows Wintun, Linux TUN, and macOS utun platform adapters
 - Windows notification-area and macOS menu-bar companions
 - Strict enum-based remote command allowlist with no server-provided shell text
@@ -443,8 +443,16 @@ The server dashboard provides setup, login, overview counters, device rename and
 revoke, persistent virtual-IP assignment, command actions, user and role
 management, administrator password resets, token management, command history,
 server settings, network-flow telemetry, and audit logs. The flow panel shows
-device-to-device direction, current Mbps, packet totals, and a 60-second chart
-from successfully routed virtual-IP packets. Resetting a password signs out
+device-to-device direction, TCP/UDP ports or ICMP metadata, stable sorting,
+filters, expandable details, current Mbps, packet totals, and a 60-second chart
+from successfully routed virtual-IP packets. For example, the additive flow API
+metadata includes:
+
+```json
+{"source":"10.90.0.2","destination":"10.90.0.3","protocol":"tcp","protocol_number":6,"source_port":52000,"destination_port":22}
+```
+
+Resetting a password signs out
 every existing session for that user; the new password must contain at least 12
 characters. **Remember me** creates a 30-day session only over HTTPS.
 
@@ -456,8 +464,9 @@ characters. **Remember me** creates a 30-day session only over HTTPS.
 | Member | Devices owned by that user | View only |
 
 Admins, operators, and viewers can view flow metadata. Members cannot access the
-cross-device flow panel. Traffic payloads, ports, and protocol contents are not
-stored; live counters remain only in server memory for 60 seconds.
+cross-device flow panel. Traffic payloads, DNS names, and application-protocol
+contents are not stored; IP protocol and port/ICMP header metadata plus live
+counters remain only in server memory for 60 seconds.
 
 Reconnect, restart, and shutdown commands are delivered over the authenticated
 control stream and tracked as queued, delivered, accepted, succeeded, failed, or

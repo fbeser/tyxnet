@@ -67,7 +67,7 @@ func Listen(address string, adapter tunnel.Device, serverIP net.IP, mtu int, mon
 		return nil, err
 	}
 	server := &Server{conn: conn, adapter: adapter, serverIP: append(net.IP(nil), serverIP.To4()...), mtu: mtu, monitor: monitor, sessions: map[uint64]*serverSession{}, byDevice: map[string]*serverSession{}, invalid: map[string]invalidSource{}, closed: make(chan struct{})}
-	server.router = routing.NewObserved(monitor.Observe)
+	server.router = routing.NewObserved(monitor.ObservePacket)
 	server.router.Add(server.serverIP, adapterPeer{server: server})
 	monitor.SetReady(true)
 	go server.readUDP()

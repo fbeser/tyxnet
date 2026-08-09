@@ -15,10 +15,11 @@ only through a certificate-validated HTTPS control connection.
 
 The flow dashboard is limited to admins, operators, and viewers because it
 reveals communication relationships across users. It records no payload,
-transport ports, DNS names, or protocol contents. Source/destination virtual IP,
-packet count, and byte count are held only in process memory for 60 seconds and
-are discarded on expiry or server restart. Packets rejected by source validation
-or routing are excluded from telemetry.
+DNS names, or application-protocol contents. Source/destination virtual IP,
+IPv4 protocol number, TCP/UDP ports or ICMP type/code, packet count, and byte
+count are held only in process memory for 60 seconds and are discarded on expiry
+or server restart. The window is capped at 4096 unique flow keys to bound memory
+use. Packets rejected by source validation or routing are excluded from telemetry.
 
 Known gaps: unaudited protocol; no per-session UDP bandwidth limiter; in-memory
 rate limits/challenges; no explicit CSRF token beyond a Strict SameSite session

@@ -10,11 +10,11 @@ type Peer interface{ Send([]byte) error }
 type Router struct {
 	mu       sync.RWMutex
 	peers    map[string]Peer
-	observer func(source, destination net.IP, packetBytes int)
+	observer func(packet []byte)
 }
 
 func New() *Router { return &Router{peers: make(map[string]Peer)} }
-func NewObserved(observer func(source, destination net.IP, packetBytes int)) *Router {
+func NewObserved(observer func(packet []byte)) *Router {
 	return &Router{peers: make(map[string]Peer), observer: observer}
 }
 func (r *Router) Add(ip net.IP, p Peer) { r.mu.Lock(); defer r.mu.Unlock(); r.peers[ip.String()] = p }
@@ -38,7 +38,7 @@ func (r *Router) Route(assigned net.IP, packet []byte) error {
 		return err
 	}
 	if observer != nil {
-		observer(src, dst, len(packet))
+		observer(packet)
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -377,14 +378,20 @@ func TestNetworkFlowsExposeRoutedMetadataByRole(t *testing.T) {
 	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
 	server.SetAdapter("TyxNet", "10.90.0.1/24")
 	server.TrafficMonitor().SetReady(true)
-	server.TrafficMonitor().Observe(net.ParseIP(deviceIDs[0]), net.ParseIP(deviceIDs[1]), 1_000_000)
+	flowPacket := make([]byte, 1_000_000)
+	flowPacket[0], flowPacket[9] = 0x45, 6
+	copy(flowPacket[12:16], net.ParseIP(deviceIDs[0]).To4())
+	copy(flowPacket[16:20], net.ParseIP(deviceIDs[1]).To4())
+	binary.BigEndian.PutUint16(flowPacket[20:22], 52000)
+	binary.BigEndian.PutUint16(flowPacket[22:24], 443)
+	server.TrafficMonitor().ObservePacket(flowPacket)
 	h := server.Handler()
 
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/network/flows", nil)
 	r.Header.Set("Authorization", "Bearer "+adminSession)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"data_plane_ready":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"admin-device"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"mbps":1.6`)) {
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"data_plane_ready":true`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"admin-device"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"mbps":1.6`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"protocol":"tcp"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"source_port":52000`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"destination_port":443`)) {
 		t.Fatalf("network flows: %d %s", w.Code, w.Body.String())
 	}
 
@@ -506,11 +513,20 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 			t.Fatalf("asset %s: %d", path, w.Code)
 		}
 	}
-	r := httptest.NewRequest("GET", "/ui/app.css", nil)
+	r := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if !bytes.Contains(w.Body.Bytes(), []byte(`id="flow-filters"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`id="flow-sort"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`id="flow-protocol"`)) {
+		t.Fatal("network flow filter controls are missing")
+	}
+	r = httptest.NewRequest("GET", "/ui/app.css", nil)
+	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if !bytes.Contains(w.Body.Bytes(), []byte("[hidden]{display:none!important}")) {
 		t.Fatal("hidden visibility guard is missing")
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(".flow-details")) {
+		t.Fatal("network flow detail styling is missing")
 	}
 	r = httptest.NewRequest("GET", "/ui/app.js", nil)
 	w = httptest.NewRecorder()
@@ -526,6 +542,9 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("Array.isArray(raw.flows)")) {
 		t.Fatal("network flow response normalization is missing")
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("flowStableKey")) || !bytes.Contains(w.Body.Bytes(), []byte("data-flow-details")) || !bytes.Contains(w.Body.Bytes(), []byte("flow-protocol")) {
+		t.Fatal("stable flow sorting, details, or filtering controls are missing")
 	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("radiusY=105")) {
 		t.Fatal("network flow topology does not preserve label space")

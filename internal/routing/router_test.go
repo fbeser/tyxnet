@@ -17,7 +17,7 @@ func packet(src, dst net.IP) []byte {
 }
 func TestRoutingAndSpoofing(t *testing.T) {
 	observed := 0
-	r := NewObserved(func(_, _ net.IP, packetBytes int) { observed += packetBytes })
+	r := NewObserved(func(packet []byte) { observed += len(packet) })
 	s := &sink{}
 	r.Add(net.ParseIP("10.90.0.3"), s)
 	if err := r.Route(net.ParseIP("10.90.0.2"), packet(net.ParseIP("10.90.0.2"), net.ParseIP("10.90.0.3"))); err != nil {
