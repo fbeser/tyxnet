@@ -84,6 +84,39 @@ func SaveClient(path string, c Client) error {
 	return nil
 }
 
+func SaveServer(path string, c Server) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("encode server config: %w", err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil && dir != "." {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(dir, ".server.yaml-*")
+	if err != nil {
+		return fmt.Errorf("create temporary server config: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err = temporary.Chmod(0o600); err == nil {
+		_, err = temporary.Write(b)
+	}
+	if closeErr := temporary.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("write server config: %w", err)
+	}
+	if err = os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("replace server config: %w", err)
+	}
+	return nil
+}
+
 func load(path string, out any) error {
 	b, err := os.ReadFile(path)
 	if err != nil {

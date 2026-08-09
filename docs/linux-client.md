@@ -1,8 +1,11 @@
 # Linux client
 
-Build with `make build-client`, join with `tyxnet-client join`, then run using a
-validated YAML file. Native `install` joins first, writes `/etc/tyxnet/client.yaml`
-and registers systemd. Identity is under `/var/lib/tyxnet/client` mode 0600.
+The release `install-client.sh` detects `amd64` or `arm64`, verifies the release
+checksum, writes `/etc/tyxnet/client.yaml`, and enables the systemd service. An
+installer run without enrollment arguments starts the web enrollment UI; a run
+with `--server`, `--token`, and `--name` joins immediately. Identity is under
+`/var/lib/tyxnet/client` mode 0600. Re-running the installer upgrades the binary
+without replacing the configuration or identity.
 The server and client create/configure separate named TUN devices and require
 CAP_NET_ADMIN/root. The client name is stable for its server URL unless
 `tunnel_name` overrides it. Packet forwarding into the UDP transport remains

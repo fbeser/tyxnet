@@ -19,3 +19,17 @@ func TestRunDefaultsToLANAndSupportsLocalOnly(t *testing.T) {
 		t.Fatalf("unexpected local-only mode: %+v", c)
 	}
 }
+
+func TestInstallAllowsWebEnrollmentOrCompleteCredentials(t *testing.T) {
+	c, configured, err := installConfiguration("", "", "")
+	if err != nil || configured || c.StateDir != "/var/lib/tyxnet/client" {
+		t.Fatalf("unconfigured install: %+v configured=%t err=%v", c, configured, err)
+	}
+	_, configured, err = installConfiguration("https://vpn.example.com", "TYX-test", "raspberry-pi")
+	if err != nil || !configured {
+		t.Fatalf("configured install: configured=%t err=%v", configured, err)
+	}
+	if _, _, err = installConfiguration("https://vpn.example.com", "", "raspberry-pi"); err == nil {
+		t.Fatal("partial enrollment credentials were accepted")
+	}
+}

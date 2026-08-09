@@ -573,6 +573,9 @@ func TestEmbeddedConsoleAssets(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("flowHistoryURL")) || !bytes.Contains(w.Body.Bytes(), []byte("flow-history-enabled")) || !bytes.Contains(w.Body.Bytes(), []byte("data-flow-history-details")) || !bytes.Contains(w.Body.Bytes(), []byte("flow-history-delete")) {
 		t.Fatal("flow history settings, filters, details, or deletion controls are missing")
 	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("port-form")) || !bytes.Contains(w.Body.Bytes(), []byte("restart_required")) {
+		t.Fatal("persistent listener port settings are missing")
+	}
 	if !bytes.Contains(w.Body.Bytes(), []byte("radiusY=105")) {
 		t.Fatal("network flow topology does not preserve label space")
 	}
@@ -596,6 +599,11 @@ func TestAdminUpdatesStaticIPAndPingInterval(t *testing.T) {
 	}
 	session, _ := st.CreateSession(ctx, admin.ID, time.Hour)
 	server := New(st, "10.90.0.0/24", time.Minute, slog.Default(), true)
+	var savedAPIPort, savedTunnelPort int
+	server.ConfigurePorts(8443, 51830, func(apiPort, tunnelPort int) error {
+		savedAPIPort, savedTunnelPort = apiPort, tunnelPort
+		return nil
+	})
 	h := server.Handler()
 
 	r := httptest.NewRequest(http.MethodPatch, "/api/v1/devices/"+device.ID, bytes.NewBufferString(`{"VirtualIP":"10.90.0.42"}`))
@@ -619,6 +627,21 @@ func TestAdminUpdatesStaticIPAndPingInterval(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"ping_interval_seconds":60`)) {
 		t.Fatalf("ping interval status: %d %s", w.Code, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodPatch, "/api/v1/server/settings", bytes.NewBufferString(`{"api_port":9443,"tunnel_port":51999}`))
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || savedAPIPort != 9443 || savedTunnelPort != 51999 || !bytes.Contains(w.Body.Bytes(), []byte(`"restart_required":true`)) {
+		t.Fatalf("listener port update: %d %s; saved=%d/%d", w.Code, w.Body.String(), savedAPIPort, savedTunnelPort)
+	}
+	r = httptest.NewRequest(http.MethodPatch, "/api/v1/server/settings", bytes.NewBufferString(`{"api_port":51999}`))
+	r.Header.Set("Authorization", "Bearer "+session)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("matching listener ports accepted: %d %s", w.Code, w.Body.String())
 	}
 
 	r = httptest.NewRequest(http.MethodPatch, "/api/v1/server/settings", bytes.NewBufferString(`{"flow_history_enabled":true,"flow_history_limit_mb":100}`))

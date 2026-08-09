@@ -76,7 +76,7 @@ loop. Do not forward TCP 8443, 18080, or 18443 from the modem in this mode.
 
 Leave the remaining port values unchanged unless they conflict with another
 service. `TYXNET_VERSION=latest` follows new releases; use a version such as
-`0.3.15` to pin the deployment.
+`0.3.16` to pin the deployment.
 
 Start everything with current Compose:
 
@@ -273,31 +273,50 @@ release; an ARM64 MSI is not available yet.
 
 ### Native Linux server
 
-Download the binary matching the host architecture from the
-[latest release](https://github.com/fbeser/tyxnet/releases/latest):
+The one-line installer detects Linux `amd64` or `arm64`, downloads the matching
+release binaries and checksum, installs `tyxnet-server` plus `tyxnetctl`, and
+enables the systemd service:
 
 ```bash
-# Raspberry Pi 5 / Linux ARM64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.15/tyxnet-server-linux-arm64
-curl -fLO https://github.com/fbeser/tyxnet/releases/download/v0.3.15/checksums.txt
-grep 'tyxnet-server-linux-arm64$' checksums.txt | sha256sum -c -
-chmod +x tyxnet-server-linux-arm64
-
-sudo ./tyxnet-server-linux-arm64 install \
-  --listen-address 0.0.0.0 \
-  --api-port 8443 \
-  --tunnel-port 51830 \
-  --network 10.90.0.0/24
+curl -fsSL https://github.com/fbeser/tyxnet/releases/latest/download/install-server.sh | sudo sh
 ```
 
-For x64 Linux, replace `arm64` with `amd64`. The install command copies the
-binary to `/usr/local/bin/tyxnet-server`, writes `/etc/tyxnet/server.yaml`,
-creates `/var/lib/tyxnet`, installs a systemd unit, and starts it.
+Choose non-default listener ports during the first installation:
+
+```bash
+curl -fsSL https://github.com/fbeser/tyxnet/releases/latest/download/install-server.sh | \
+  sudo sh -s -- --api-port 9443 --tunnel-port 51999
+```
+
+The management console can persist later TCP management-port and UDP
+tunnel-port changes under **Overview → Listener ports**. Restart the service and
+update firewall, router, and client-facing URLs after saving. Container host
+ports remain deployment settings and must be changed in the Compose environment.
 
 ```bash
 sudo systemctl status tyxnet-server
 sudo journalctl -u tyxnet-server -f
 ```
+
+### Native Linux client
+
+The client-only installer verifies the matching release binary and enables it
+at startup. With no arguments, enroll through the local/LAN setup page on port
+`9070`:
+
+```bash
+curl -fsSL https://github.com/fbeser/tyxnet/releases/latest/download/install-client.sh | sudo sh
+```
+
+For unattended enrollment, provide all three values together:
+
+```bash
+curl -fsSL https://github.com/fbeser/tyxnet/releases/latest/download/install-client.sh | \
+  sudo sh -s -- --server https://vpn.example.com --token 'TYX-...' --name raspberry-pi
+```
+
+Re-running either installer upgrades the binaries and preserves existing
+configuration, database, and client identity files.
 
 ## What works today
 
@@ -401,19 +420,16 @@ The web console can create and revoke enrollment tokens without using the CLI.
 
 ### Linux client
 
-Download `tyxnet-client-linux-amd64` or `tyxnet-client-linux-arm64` from the
-release, make it executable, then enroll and install it:
+Use the client-only release installer and enroll from the web page on port
+`9070`:
 
 ```bash
-chmod +x tyxnet-client-linux-arm64
-sudo ./tyxnet-client-linux-arm64 install \
-  --server https://vpn.example.com \
-  --token TYX-EXAMPLE \
-  --name workshop-pc
+curl -fsSL https://github.com/fbeser/tyxnet/releases/latest/download/install-client.sh | sudo sh
 ```
 
-The command stores the client identity with owner-only permissions and creates a
-systemd service.
+For unattended enrollment, pass `--server`, `--token`, and `--name` as shown in
+the Native Linux client section above. The installer stores the identity with
+owner-only permissions and creates a systemd service.
 
 ### macOS client
 
@@ -600,7 +616,7 @@ Useful targets:
 Release targets accept `VERSION`, for example:
 
 ```bash
-make release-full VERSION=0.3.15
+make release-full VERSION=0.3.16
 ```
 
 ## Release verification

@@ -149,3 +149,27 @@ func TestLoadValidatesDecodedConfiguration(t *testing.T) {
 		t.Fatal("expected decoded server configuration to be rejected")
 	}
 }
+
+func TestSaveServerRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "server.yaml")
+	want := DefaultServer()
+	want.APIPort = 9443
+	want.TunnelPort = 51999
+	if err := SaveServer(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadServer(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIPort != want.APIPort || got.TunnelPort != want.TunnelPort {
+		t.Fatalf("saved ports = %d/%d, want %d/%d", got.APIPort, got.TunnelPort, want.APIPort, want.TunnelPort)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("server config mode = %o, want 600", info.Mode().Perm())
+	}
+}

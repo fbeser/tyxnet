@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: TyxNet API
-  version: 0.3.15
+  version: 0.3.16
   description: Experimental management, enrollment and device-control API.
 servers:
   - url: https://vpn.example.com
@@ -241,8 +241,8 @@ paths:
         '204': {description: All saved flow history deleted.}
         '403': {description: Administrator permission required.}
   /api/v1/server/settings:
-    get: {description: Returns administrator-managed persistent settings including the device ping interval, flow-history recording toggle, and logical metadata limit in MB, security: [{bearerAuth: []}], responses: {'200': {description: Server settings}}}
-    patch: {description: Persists one or more of ping_interval_seconds (5-3600), flow_history_enabled, and flow_history_limit_mb (1-10240). Lowering the history limit immediately removes oldest records until the logical metadata budget is met., security: [{bearerAuth: []}], responses: {'200': {description: Updated settings}, '400': {description: Invalid setting or no setting supplied}}}
+    get: {description: Returns administrator-managed persistent settings including listener ports, restart state, device ping interval, flow-history recording toggle, and logical metadata limit in MB, security: [{bearerAuth: []}], responses: {'200': {description: Server settings}}}
+    patch: {description: Persists one or more of api_port (1-65535), tunnel_port (1-65535), ping_interval_seconds (5-3600), flow_history_enabled, and flow_history_limit_mb (1-10240). Listener port changes take effect after server restart. Lowering the history limit immediately removes oldest records until the logical metadata budget is met., security: [{bearerAuth: []}], responses: {'200': {description: Updated settings}, '400': {description: Invalid setting or no setting supplied}}}
   /api/v1/server/startup:
     get: {description: Returns startup availability, registration state, and an unavailability reason when startup is managed by a container runtime, security: [{bearerAuth: []}], responses: {'200': {description: Startup capability and state}}}
     patch: {description: Administrator-only creation or removal of the platform startup registration, security: [{bearerAuth: []}], responses: {'200': {description: Updated startup state}, '409': {description: Startup registration is unavailable in this runtime}}}

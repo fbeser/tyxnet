@@ -155,16 +155,30 @@ func install(a []string) error {
 	if err := f.Parse(a); err != nil {
 		return err
 	}
-	c := config.DefaultClient()
-	c.ServerURL = *server
-	c.Name = *name
-	c.StateDir = "/var/lib/tyxnet/client"
-	if err := c.Validate(); err != nil {
+	c, configured, err := installConfiguration(*server, *token, *name)
+	if err != nil {
 		return err
 	}
-	if err := client.New(c).Join(context.Background(), *token); err != nil {
-		return err
+	if configured {
+		if err := client.New(c).Join(context.Background(), *token); err != nil {
+			return err
+		}
 	}
 	b, _ := yaml.Marshal(c)
 	return installer.Install(installer.Spec{Name: "tyxnet-client", Binary: "tyxnet-client", Config: "/etc/tyxnet/client.yaml", ConfigData: b})
+}
+
+func installConfiguration(server, token, name string) (config.Client, bool, error) {
+	c := config.DefaultClient()
+	c.ServerURL = server
+	c.Name = name
+	c.StateDir = "/var/lib/tyxnet/client"
+	configured := server != "" || token != "" || name != ""
+	if configured && (server == "" || token == "" || name == "") {
+		return c, false, errors.New("--server, --token, and --name must be supplied together")
+	}
+	if err := c.Validate(); err != nil {
+		return c, false, err
+	}
+	return c, configured, nil
 }

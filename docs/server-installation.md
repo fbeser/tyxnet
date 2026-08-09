@@ -74,6 +74,12 @@ durations such as `25s` or `1m`. Administrators can change the live value from
 the Overview page; web changes are stored in SQLite and take precedence after a
 restart.
 
+For native installations, administrators can also persist the management TCP
+port and tunnel UDP port from **Overview → Listener ports**. These changes take
+effect after restarting `tyxnet-server`; firewall and router forwarding rules
+must be updated separately. Docker/CasaOS host ports remain Compose environment
+settings because the application cannot rewrite container port mappings.
+
 Administrators can assign a persistent virtual IPv4 address from the Devices
 page. The address must be inside the configured TyxNet network, cannot use the
 network, server, or broadcast address, and cannot already belong to another

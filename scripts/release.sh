@@ -22,9 +22,6 @@ for arch in amd64 arm64; do
   build darwin "$arch" tyxnet-client "tyxnet-client-darwin-$arch"
   build darwin "$arch" tyxnetctl "tyxnetctl-darwin-$arch"
 done
-rm -f dist/checksums.txt
-if command -v sha256sum >/dev/null 2>&1; then
-  (cd dist && find . -maxdepth 1 -type f ! -name checksums.txt -exec sha256sum {} \; > checksums.txt)
-else
-  (cd dist && find . -maxdepth 1 -type f ! -name checksums.txt -exec shasum -a 256 {} \; > checksums.txt)
-fi
+cp install-server.sh install-client.sh dist/
+chmod 0755 dist/install-server.sh dist/install-client.sh
+sh scripts/checksums.sh

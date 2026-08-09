@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -103,6 +104,7 @@ func runServer(args []string) error {
 		return err
 	}
 	defer func() { _ = s.Close() }()
+	persistedConfig := c
 	switch webMode {
 	case "local":
 		c.ListenAddress = "127.0.0.1"
@@ -119,6 +121,19 @@ func runServer(args []string) error {
 	loopback := net.ParseIP(c.ListenAddress).IsLoopback()
 	controlServer := control.New(s, c.Network, c.SessionTTL, log, loopback || c.AllowRemoteSetup)
 	controlServer.SetDefaultPingInterval(c.PingInterval)
+	var configMu sync.Mutex
+	controlServer.ConfigurePorts(c.APIPort, c.TunnelPort, func(apiPort, tunnelPort int) error {
+		configMu.Lock()
+		defer configMu.Unlock()
+		updated := persistedConfig
+		updated.APIPort = apiPort
+		updated.TunnelPort = tunnelPort
+		if err := config.SaveServer(path, updated); err != nil {
+			return err
+		}
+		persistedConfig = updated
+		return nil
+	})
 	if c.AllowRemoteSetup && !loopback {
 		controlServer.AllowRemoteBootstrap()
 		log.Warn("remote first-admin setup enabled; use only on a trusted LAN")

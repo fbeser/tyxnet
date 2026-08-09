@@ -32,33 +32,39 @@ import (
 )
 
 type Server struct {
-	store            *storage.Store
-	network          string
-	ttl              time.Duration
-	started          time.Time
-	log              *slog.Logger
-	limiter          *ipLimiter
-	challengeMu      sync.Mutex
-	challenges       map[string]challenge
-	connectionsMu    sync.RWMutex
-	connections      map[string]int
-	localBootstrap   bool
-	remoteBootstrap  bool
-	adapterName      string
-	adapterAddress   string
-	pingIntervalNS   atomic.Int64
-	flowHistoryOn    atomic.Bool
-	flowHistoryMB    atomic.Int64
-	startupSpec      application.StartupSpec
-	trayToken        string
-	shutdown         func()
-	startupAvailable func() (bool, string)
-	startupEnabled   func(application.StartupSpec) (bool, error)
-	setStartup       func(application.StartupSpec, bool) error
-	traffic          *routing.TrafficMonitor
-	dataPlane        *dataplane.Server
-	commandMu        sync.Mutex
-	commandSignals   map[string]chan struct{}
+	store             *storage.Store
+	network           string
+	ttl               time.Duration
+	started           time.Time
+	log               *slog.Logger
+	limiter           *ipLimiter
+	challengeMu       sync.Mutex
+	challenges        map[string]challenge
+	connectionsMu     sync.RWMutex
+	connections       map[string]int
+	localBootstrap    bool
+	remoteBootstrap   bool
+	adapterName       string
+	adapterAddress    string
+	pingIntervalNS    atomic.Int64
+	flowHistoryOn     atomic.Bool
+	flowHistoryMB     atomic.Int64
+	startupSpec       application.StartupSpec
+	trayToken         string
+	shutdown          func()
+	startupAvailable  func() (bool, string)
+	startupEnabled    func(application.StartupSpec) (bool, error)
+	setStartup        func(application.StartupSpec, bool) error
+	traffic           *routing.TrafficMonitor
+	dataPlane         *dataplane.Server
+	commandMu         sync.Mutex
+	commandSignals    map[string]chan struct{}
+	portsMu           sync.RWMutex
+	apiPort           int
+	tunnelPort        int
+	runningAPIPort    int
+	runningTunnelPort int
+	savePorts         func(int, int) error
 }
 
 func (s *Server) SetAdapter(name, address string) {
@@ -72,6 +78,18 @@ func (s *Server) ConfigureApplication(spec application.StartupSpec, trayToken st
 	s.startupSpec = spec
 	s.trayToken = trayToken
 	s.shutdown = shutdown
+}
+
+// ConfigurePorts exposes the running listener ports and a persistence callback
+// to the administrator settings API. Persisted changes take effect on restart.
+func (s *Server) ConfigurePorts(apiPort, tunnelPort int, save func(int, int) error) {
+	s.portsMu.Lock()
+	defer s.portsMu.Unlock()
+	s.apiPort = apiPort
+	s.tunnelPort = tunnelPort
+	s.runningAPIPort = apiPort
+	s.runningTunnelPort = tunnelPort
+	s.savePorts = save
 }
 
 // AllowRemoteBootstrap permits first-admin setup from the listening network.
@@ -167,11 +185,42 @@ func (s *Server) persistFlowHistory(records []routing.TrafficHistoryRecord) erro
 func (s *Server) pingInterval() time.Duration { return time.Duration(s.pingIntervalNS.Load()) }
 
 func (s *Server) serverSettings() map[string]any {
+	s.portsMu.RLock()
+	apiPort, tunnelPort := s.apiPort, s.tunnelPort
+	restartRequired := apiPort != s.runningAPIPort || tunnelPort != s.runningTunnelPort
+	s.portsMu.RUnlock()
 	return map[string]any{
 		"ping_interval_seconds": int(s.pingInterval().Seconds()),
 		"flow_history_enabled":  s.flowHistoryOn.Load(),
 		"flow_history_limit_mb": s.flowHistoryMB.Load(),
+		"api_port":              apiPort,
+		"tunnel_port":           tunnelPort,
+		"restart_required":      restartRequired,
 	}
+}
+
+func validatePorts(apiPort, tunnelPort int) error {
+	if apiPort < 1 || apiPort > 65535 || tunnelPort < 1 || tunnelPort > 65535 {
+		return errors.New("ports must be between 1 and 65535")
+	}
+	if apiPort == tunnelPort {
+		return errors.New("management and tunnel ports must differ")
+	}
+	return nil
+}
+
+func (s *Server) updatePorts(apiPort, tunnelPort int) error {
+	s.portsMu.Lock()
+	defer s.portsMu.Unlock()
+	if s.savePorts == nil {
+		return errors.New("port configuration is unavailable in this runtime")
+	}
+	if err := s.savePorts(apiPort, tunnelPort); err != nil {
+		return err
+	}
+	s.apiPort = apiPort
+	s.tunnelPort = tunnelPort
+	return nil
 }
 
 func (s *Server) deviceConnected(deviceID string) {
@@ -738,12 +787,14 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			PingIntervalSeconds *int   `json:"ping_interval_seconds"`
 			FlowHistoryEnabled  *bool  `json:"flow_history_enabled"`
 			FlowHistoryLimitMB  *int64 `json:"flow_history_limit_mb"`
+			APIPort             *int   `json:"api_port"`
+			TunnelPort          *int   `json:"tunnel_port"`
 		}
 		if decode(r, &in) != nil {
 			problem(w, 400, "invalid_request", "invalid JSON")
 			return
 		}
-		if in.PingIntervalSeconds == nil && in.FlowHistoryEnabled == nil && in.FlowHistoryLimitMB == nil {
+		if in.PingIntervalSeconds == nil && in.FlowHistoryEnabled == nil && in.FlowHistoryLimitMB == nil && in.APIPort == nil && in.TunnelPort == nil {
 			problem(w, 400, "invalid_request", "at least one setting is required")
 			return
 		}
@@ -765,6 +816,26 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.FlowHistoryLimitMB != nil {
 			values["flow_history_limit_mb"] = strconv.FormatInt(*in.FlowHistoryLimitMB, 10)
+		}
+		if in.APIPort != nil || in.TunnelPort != nil {
+			s.portsMu.RLock()
+			apiPort, tunnelPort := s.apiPort, s.tunnelPort
+			s.portsMu.RUnlock()
+			if in.APIPort != nil {
+				apiPort = *in.APIPort
+			}
+			if in.TunnelPort != nil {
+				tunnelPort = *in.TunnelPort
+			}
+			if err := validatePorts(apiPort, tunnelPort); err != nil {
+				problem(w, 400, "invalid_port_configuration", err.Error())
+				return
+			}
+			if err := s.updatePorts(apiPort, tunnelPort); err != nil {
+				s.log.Error("server port configuration could not be persisted", "error", err)
+				problem(w, 500, "port_configuration_save_failed", "port configuration could not be saved")
+				return
+			}
 		}
 		if in.FlowHistoryEnabled != nil && *in.FlowHistoryEnabled && !s.flowHistoryOn.Load() {
 			if err := s.traffic.FlushHistory(); err != nil {

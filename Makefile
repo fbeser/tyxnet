@@ -38,6 +38,7 @@ clean:
 release:
 	sh scripts/release.sh $(VERSION)
 release-full: release package-macos package-windows
+	sh scripts/checksums.sh
 package-windows:
 	sh scripts/package-windows.sh $(VERSION)
 package-macos:
